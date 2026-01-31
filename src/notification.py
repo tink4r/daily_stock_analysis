@@ -21,7 +21,7 @@ import json
 import smtplib
 import re
 import markdown2
-from datetime import datetime, time
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -252,7 +252,7 @@ class NotificationService:
     def _is_astrbot_configured(self) -> bool:
         """检查 AstrBot 配置是否完整（支持 Bot 或 Webhook）"""
         # 只要配置了 URL，即视为可用
-        url_ok = bool(self._discord_config['astrbot_url'])
+        url_ok = bool(self._astrbot_config['astrbot_url'])
         return url_ok
 
     def _is_email_configured(self) -> bool:
@@ -2830,6 +2830,7 @@ class NotificationService:
             return False
 
     def _send_astrbot(self, content: str) -> bool:
+        import time
         """
         使用 Bot API 发送消息到 AstrBot
 
@@ -2845,16 +2846,18 @@ class NotificationService:
             payload = {
                 'content': content
             }
-            """计算请求签名"""
+            signature =  ""
             timestamp = str(int(time.time()))
-            payload_json = json.dumps(payload, sort_keys=True)
-            sign_data = f"{timestamp}.{payload_json}".encode('utf-8')
-            key = self._astrbot_config['astrbot_token']
-            signature = hmac.new(
-                key.encode('utf-8'),
-                sign_data,
-                hashlib.sha256
-            ).hexdigest()
+            if self._astrbot_config['astrbot_token']:
+                """计算请求签名"""
+                payload_json = json.dumps(payload, sort_keys=True)
+                sign_data = f"{timestamp}.{payload_json}".encode('utf-8')
+                key = self._astrbot_config['astrbot_token']
+                signature = hmac.new(
+                    key.encode('utf-8'),
+                    sign_data,
+                    hashlib.sha256
+                ).hexdigest()
             url = self._astrbot_config['astrbot_url']
             response = requests.post(url, json=payload, timeout=10,headers={
                         "Content-Type": "application/json",
