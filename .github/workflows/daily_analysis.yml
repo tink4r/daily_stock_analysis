@@ -32,8 +32,8 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    # 添加超时限制，防止任务卡死
-    timeout-minutes: 30
+    # 添加超时限制，防止任务卡死（GitHub-hosted runner 单个 job 硬上限通常为 360 分钟）
+    timeout-minutes: 60
     
     steps:
       - name: 随机延迟（避免固定时间访问）
