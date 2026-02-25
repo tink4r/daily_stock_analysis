@@ -219,6 +219,8 @@ daily_stock_analysis/
 
 ## Docker 部署
 
+> 日常运维命令（暂停/恢复/日志/进入容器/重启）请参考 [Docker 运维操作手册](docker/docker-operations.md)
+
 Dockerfile 使用多阶段构建，前端会在构建镜像时自动打包并内置到 `static/`。
 如需覆盖静态资源，可挂载本地 `static/` 到容器内 `/app/static`。
 

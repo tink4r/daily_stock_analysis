@@ -294,19 +294,28 @@ class MarketAnalyzer:
                 'max_output_tokens': 2048,
             }
             
-            # 根据 analyzer 使用的 API 类型调用
-            if self.analyzer._use_openai:
-                # 使用 OpenAI 兼容 API
-                review = self.analyzer._call_openai_api(prompt, generation_config)
-            else:
-                # 使用 Gemini API
-                response = self.analyzer._model.generate_content(
-                    prompt,
-                    generation_config=generation_config,
-                )
-                review = response.text.strip() if response and response.text else None
+            review = self._request_market_review_once(prompt, generation_config)
             
             if review:
+                if self._looks_like_json_output(review):
+                    logger.warning("[大盘] 检测到疑似 JSON 串台输出，触发一次严格重试")
+                    strict_prompt = (
+                        prompt
+                        + "\n\n【最终输出约束（最高优先级）】\n"
+                          "- 仅输出 Markdown 报告正文\n"
+                          "- 不得输出 JSON / 字典 / 键值对\n"
+                          "- 不得输出代码块\n"
+                          "- 使用“一、二、三...”中文章节\n"
+                    )
+                    strict_config = dict(generation_config)
+                    strict_config['temperature'] = 0.2
+                    retry_review = self._request_market_review_once(strict_prompt, strict_config)
+                    if retry_review and not self._looks_like_json_output(retry_review):
+                        review = retry_review
+                    else:
+                        logger.warning("[大盘] 严格重试后仍非预期格式，回退模板报告")
+                        return self._generate_template_review(overview, news)
+
                 logger.info(f"[大盘] 复盘报告生成成功，长度: {len(review)} 字符")
                 # Inject structured data tables into LLM prose sections
                 return self._inject_data_into_review(review, overview)
@@ -317,17 +326,43 @@ class MarketAnalyzer:
         except Exception as e:
             logger.error(f"[大盘] 大模型生成复盘报告失败: {e}")
             return self._generate_template_review(overview, news)
+
+    def _request_market_review_once(self, prompt: str, generation_config: Dict[str, Any]) -> Optional[str]:
+        """单次请求大盘复盘文本。"""
+        if self.analyzer._use_openai:
+            review = self.analyzer._call_openai_api(prompt, generation_config)
+            return review.strip() if review else None
+
+        response = self.analyzer._model.generate_content(
+            prompt,
+            generation_config=generation_config,
+        )
+        return response.text.strip() if response and response.text else None
+
+    @staticmethod
+    def _looks_like_json_output(text: str) -> bool:
+        """检测是否为个股决策仪表盘 JSON 串台输出。"""
+        if not text:
+            return False
+        s = text.strip()
+        if s.startswith('{') and s.endswith('}'):
+            return True
+        markers = (
+            '"stock_name"',
+            '"sentiment_score"',
+            '"trend_prediction"',
+            '"dashboard"',
+            '"core_conclusion"',
+        )
+        hit_count = sum(1 for m in markers if m in s)
+        return hit_count >= 2
     
     def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:
         """Inject structured data tables into the corresponding LLM prose sections."""
         # Build data blocks
-        timeliness_block = self._build_market_timeliness_context(overview)
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
         sector_block = self._build_sector_block(overview)
-
-        if timeliness_block and "时效" not in review:
-            review = f"### 零、时效说明\n{timeliness_block}\n\n" + review
 
         # Inject market stats after "### 一、市场总结" section (before next ###)
         if stats_block:
@@ -391,11 +426,18 @@ class MarketAnalyzer:
         return "\n".join(lines)
 
     def _build_market_timeliness_context(self, overview: MarketOverview) -> str:
-        """构建大盘分析时效说明，优先识别A股交易日。"""
+        """构建隐式时段上下文，仅用于模型推理。"""
         now = datetime.now()
         today = now.date()
         is_trading_day = self._is_a_share_trading_day(today)
         market_state = "交易日" if is_trading_day else "休市日"
+        hour = now.hour
+        if not is_trading_day:
+            market_phase = "休市时段"
+        elif 9 <= hour < 15:
+            market_phase = "盘中"
+        else:
+            market_phase = "盘后"
 
         lag_days = "未知"
         try:
@@ -404,17 +446,12 @@ class MarketAnalyzer:
         except Exception:
             pass
 
-        if is_trading_day:
-            explain = "当前处于交易日，结论需标注盘中/盘后时效边界，并提醒下一交易时段验证。"
-        else:
-            explain = "当前处于休市日（周末或节假日），结论应强调存量信息推演，等待开市验证。"
-
         return (
-            f"- 当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"- 市场状态: {market_state}\n"
-            f"- 数据日期: {overview.date}\n"
-            f"- 数据时滞(天): {lag_days}\n"
-            f"- 时效说明: {explain}"
+            "## 隐式时段上下文（用于辅助推理）\n"
+            f"- 市场日类型: {market_state}\n"
+            f"- 当前阶段: {market_phase}\n"
+            f"- 数据新鲜度(天): {lag_days}\n"
+            "- 要求: 结论需体现交易时段差异，避免把非交易日信息误写为当日盘中驱动。"
         )
 
     def _is_a_share_trading_day(self, target_date: date) -> bool:
@@ -511,14 +548,13 @@ class MarketAnalyzer:
 
 {"注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。" if not indices_text else ""}
 
+{self._build_market_timeliness_context(overview)}
+
 ---
 
 # 输出格式模板（请严格按此格式输出）
 
 ## 📊 {overview.date} 大盘复盘
-
-### 零、时效说明
-（必须说明当前是交易日还是休市日，结论的有效期边界，以及下一交易时段验证点）
 
 ### 一、市场总结
 （2-3句话概括今日市场整体表现，包括指数涨跌、成交量变化）
@@ -537,11 +573,6 @@ class MarketAnalyzer:
 
 ### 六、风险提示
 （需要关注的风险点）
-
-【硬性要求】
-1) 若为休市日，必须明确“休市导致数据滞后，结论偏存量推演”。
-2) 若为交易日，必须明确“盘中/盘后新增信息可能改变判断”。
-3) 不得把非交易日新闻误写为当日盘中行情驱动。
 
 ---
 
@@ -599,9 +630,6 @@ class MarketAnalyzer:
 
 ### 五、风险提示
 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
-
----
-*复盘时间: {datetime.now().strftime('%H:%M')}*
 """
         return report
     

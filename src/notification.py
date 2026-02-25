@@ -410,7 +410,7 @@ class NotificationService:
         report_lines = [
             f"# 📅 {report_date} 股票智能分析报告",
             "",
-            f"> 共分析 **{len(results)}** 只股票 | 报告生成时间：{datetime.now().strftime('%H:%M:%S')}",
+            f"> 共分析 **{len(results)}** 只股票",
             "",
             "---",
             "",
@@ -575,12 +575,6 @@ class NotificationService:
                 "",
             ])
         
-        # 底部信息（去除免责声明）
-        report_lines.extend([
-            "",
-            f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        ])
-        
         return "\n".join(report_lines)
     
     @staticmethod
@@ -599,12 +593,22 @@ class NotificationService:
             return str(value)
         if not value or value == 'N/A':
             return value
-        prefixes = ['理想买入点：', '次优买入点：', '止损位：', '目标位：',
-                     '理想买入点:', '次优买入点:', '止损位:', '目标位:']
-        for prefix in prefixes:
-            if value.startswith(prefix):
-                return value[len(prefix):]
+        value = re.sub(r'^\s*(理想买入点|次优买入点|止损位|目标位)\s*[：:]\s*', '', value)
         return value
+
+    @staticmethod
+    def _clean_position_advice(value: Any, role: str) -> str:
+        """Remove duplicated leading role labels from position advice text."""
+        if value is None:
+            return ''
+        text = str(value).strip()
+        if not text:
+            return text
+        if role == 'no_position':
+            pattern = r'^\s*(空仓者(?:建议)?|无仓位(?:建议)?)\s*[：:]\s*'
+        else:
+            pattern = r'^\s*(持仓者(?:建议)?|有仓位(?:建议)?)\s*[：:]\s*'
+        return re.sub(pattern, '', text)
 
     def _get_signal_level(self, result: AnalysisResult) -> tuple:
         """
@@ -760,7 +764,6 @@ class NotificationService:
             # ========== 核心结论 ==========
             core = dashboard.get('core_conclusion', {}) if dashboard else {}
             one_sentence = core.get('one_sentence', result.analysis_summary)
-            time_sense = core.get('time_sensitivity', '本周内')
             pos_advice = core.get('position_advice', {})
             
             report_lines.extend([
@@ -770,8 +773,6 @@ class NotificationService:
                 "",
                 f"> **一句话决策**: {one_sentence}",
                 "",
-                f"⏰ **时效性**: {time_sense}",
-                "",
             ])
             
             # 持仓分类建议
@@ -779,8 +780,8 @@ class NotificationService:
                 report_lines.extend([
                     "| 持仓情况 | 操作建议 |",
                     "|---------|---------|",
-                    f"| 🆕 **空仓者** | {pos_advice.get('no_position', result.operation_advice)} |",
-                    f"| 💼 **持仓者** | {pos_advice.get('has_position', '继续持有')} |",
+                    f"| 🆕 **空仓者** | {self._clean_position_advice(pos_advice.get('no_position', result.operation_advice), 'no_position')} |",
+                    f"| 💼 **持仓者** | {self._clean_position_advice(pos_advice.get('has_position', '继续持有'), 'has_position')} |",
                     "",
                 ])
 
@@ -928,12 +929,6 @@ class NotificationService:
                 "",
             ])
         
-        # 底部（去除免责声明）
-        report_lines.extend([
-            "",
-            f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        ])
-        
         return "\n".join(report_lines)
     
     def generate_wechat_dashboard(self, results: List[AnalysisResult]) -> str:
@@ -986,12 +981,6 @@ class NotificationService:
                 lines.append(f"📌 **{one_sentence}**")
                 lines.append("")
 
-            # 交易日时效解释（模型未给出时使用本地兜底）
-            time_note = self._build_timeliness_note(result, core)
-            if time_note:
-                lines.append(f"⏱ 时效: {time_note}")
-                lines.append("")
-
             # 行情关键数据（避免“没有对应数据”）
             snapshot = getattr(result, 'market_snapshot', None) or {}
             if snapshot:
@@ -1040,9 +1029,9 @@ class NotificationService:
             # 狙击点位
             sniper = battle.get('sniper_points', {}) if battle else {}
             if sniper:
-                ideal_buy = sniper.get('ideal_buy', '')
-                stop_loss = sniper.get('stop_loss', '')
-                take_profit = sniper.get('take_profit', '')
+                ideal_buy = self._clean_sniper_value(sniper.get('ideal_buy', ''))
+                stop_loss = self._clean_sniper_value(sniper.get('stop_loss', ''))
+                take_profit = self._clean_sniper_value(sniper.get('take_profit', ''))
                 
                 points = []
                 if ideal_buy:
@@ -1059,8 +1048,8 @@ class NotificationService:
             # 持仓建议
             pos_advice = core.get('position_advice', {}) if core else {}
             if pos_advice:
-                no_pos = pos_advice.get('no_position', '')
-                has_pos = pos_advice.get('has_position', '')
+                no_pos = self._clean_position_advice(pos_advice.get('no_position', ''), 'no_position')
+                has_pos = self._clean_position_advice(pos_advice.get('has_position', ''), 'has_position')
                 if no_pos:
                     lines.append(f"🆕 空仓者: {no_pos}")
                 if has_pos:
@@ -1231,11 +1220,6 @@ class NotificationService:
                 for cat in catalysts[:3]:
                     lines.append(f"- {cat}")
 
-        time_note = self._build_timeliness_note(result, core)
-        if time_note:
-            lines.append("")
-            lines.append(f"⏱ **交易日时效**: {time_note}")
-        
         if info_added:
             lines.append("")
         
@@ -1250,10 +1234,10 @@ class NotificationService:
             stop_loss = sniper.get('stop_loss', '-')
             take_profit = sniper.get('take_profit', '-')
             secondary_buy = sniper.get('secondary_buy', '-')
-            lines.append(f"- 买点(理想): {ideal_buy}")
-            lines.append(f"- 买点(次优): {secondary_buy}")
-            lines.append(f"- 止损位: {stop_loss}")
-            lines.append(f"- 目标位: {take_profit}")
+            lines.append(f"- 买点(理想): {self._clean_sniper_value(ideal_buy)}")
+            lines.append(f"- 买点(次优): {self._clean_sniper_value(secondary_buy)}")
+            lines.append(f"- 止损位: {self._clean_sniper_value(stop_loss)}")
+            lines.append(f"- 目标位: {self._clean_sniper_value(take_profit)}")
             lines.append("")
         
         # 持仓建议
@@ -1262,8 +1246,8 @@ class NotificationService:
             lines.extend([
                 "### 💼 持仓建议",
                 "",
-                f"- 🆕 **空仓者**: {pos_advice.get('no_position', result.operation_advice)}",
-                f"- 💼 **持仓者**: {pos_advice.get('has_position', '继续持有')}",
+                f"- 🆕 **空仓者**: {self._clean_position_advice(pos_advice.get('no_position', result.operation_advice), 'no_position')}",
+                f"- 💼 **持仓者**: {self._clean_position_advice(pos_advice.get('has_position', '继续持有'), 'has_position')}",
                 "",
             ])
         

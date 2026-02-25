@@ -527,6 +527,7 @@ class GeminiAnalyzer:
     - 周末/节假日：明确提示“暂无当日交易，优先评估存量信息延续性”。
     - 交易日盘后：强调次日开盘验证点。
     - 交易日盘中：强调波动可能导致结论失效窗口。
+8. 时段判断用于增强建议准确性，可在必要时简要说明盘中/盘后/休市窗口，但避免在每只股票中机械重复同类时效句。
 """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -1183,7 +1184,7 @@ class GeminiAnalyzer:
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
 - **引用证据**：`dashboard.intelligence.evidence` 至少 2 条，至少 1 条带 URL；财务相关优先官方公告链接
-- **时效说明**：`core_conclusion.time_sensitivity` 与正文必须体现交易日/周末差异
+- **时段理解**：请基于交易日/休市、盘中/盘后差异调整建议强弱；若说明时效，请简洁且避免每只股票重复同一句话
 
 请输出完整的 JSON 格式决策仪表盘。"""
         
@@ -1193,9 +1194,15 @@ class GeminiAnalyzer:
         """构建时效上下文，帮助模型区分交易日/非交易日语境。"""
         now = datetime.now()
         analysis_date = str(context.get('date') or now.date().isoformat())
-        weekday_cn = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
         is_weekend = now.weekday() >= 5
         market_state = "休市(周末/节假日可能)" if is_weekend else "交易日"
+        hour = now.hour
+        if is_weekend:
+            market_phase = "休市时段"
+        elif 9 <= hour < 15:
+            market_phase = "盘中"
+        else:
+            market_phase = "盘后"
 
         lag_days = "未知"
         try:
@@ -1205,12 +1212,12 @@ class GeminiAnalyzer:
             pass
 
         return (
-            "### ⏱ 时效上下文\n"
-            f"- 当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')} ({weekday_cn})\n"
+            "### ⏱ 隐式时段上下文（仅用于推理）\n"
             f"- 市场状态: {market_state}\n"
+            f"- 当前阶段: {market_phase}\n"
             f"- 技术面最新交易日: {analysis_date}\n"
             f"- 数据时滞(天): {lag_days}\n"
-            "- 要求: 结论需说明时效边界，避免把周末消息当作当日盘中信号\n"
+            "- 要求: 结论需考虑时段差异；若提及时效请简洁，避免在每只股票重复固定表达\n"
         )
 
     @staticmethod

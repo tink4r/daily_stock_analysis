@@ -149,6 +149,8 @@ python main.py
 ```
 
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
+>
+> 日常服务器运维（暂停/恢复/日志/重启）请参考 [Docker 运维操作手册](docs/docker/docker-operations.md)
 
 ## 📱 推送效果
 
