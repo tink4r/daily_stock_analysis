@@ -12,8 +12,10 @@ A股自选股智能分析系统 - AI分析层
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional, Dict, Any, List
 from json_repair import repair_json
 
@@ -420,11 +422,15 @@ class GeminiAnalyzer:
         },
 
         "intelligence": {
-            "latest_news": "【最新消息】近期重要新闻摘要",
-            "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
-            "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
-            "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
-            "sentiment_summary": "舆情情绪一句话总结"
+            "latest_news": "【最新消息】不少于2条关键信息，包含时间/主体/事件（80字以上）",
+            "risk_alerts": ["风险点1：具体描述+影响路径", "风险点2：具体描述+影响路径"],
+            "positive_catalysts": ["利好1：具体描述+可能催化窗口", "利好2：具体描述+可能催化窗口"],
+            "earnings_outlook": "业绩预期分析（必须引用财报/业绩预告/业绩快报中的具体数字，不得只写笼统结论）",
+            "sentiment_summary": "舆情情绪总结（给出偏多/中性/偏空及理由）",
+            "evidence": [
+                "[来源] 日期 | 事件 | 对股价潜在影响",
+                "[来源] 日期 | 事件 | 对估值/业绩潜在影响"
+            ]
         },
 
         "battle_plan": {
@@ -506,6 +512,22 @@ class GeminiAnalyzer:
 3. **精确狙击点**：必须给出具体价格，不说模糊的话
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出"""
+
+    SYSTEM_PROMPT += """
+
+## 🧠 情报输出增强要求（必须遵守）
+
+1. `dashboard.intelligence` 必须完整输出，禁止留空对象。
+2. `risk_alerts` 与 `positive_catalysts` 各至少 2 条；若不足，明确写“未检索到更多有效证据”。
+3. `earnings_outlook` 必须优先使用结构化财务数据中的数字（营收、净利润、同比、EPS等）。
+4. `latest_news` 不得只写一句话，必须概括“事件-主体-时间-影响”。
+5. `evidence` 至少 2 条，格式固定为“[来源] 日期 | 事件 | 影响”。
+6. 若上下文中有链接，`evidence` 至少 1 条必须包含可访问 URL；财务类优先引用巨潮/交易所官方链接。
+7. 必须结合“当前时间 + 最新交易日”判断时效：
+    - 周末/节假日：明确提示“暂无当日交易，优先评估存量信息延续性”。
+    - 交易日盘后：强调次日开盘验证点。
+    - 交易日盘中：强调波动可能导致结论失效窗口。
+"""
 
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -1008,6 +1030,8 @@ class GeminiAnalyzer:
 | 股票名称 | **{stock_name}** |
 | 分析日期 | {context.get('date', '未知')} |
 
+{self._build_time_context(context)}
+
 ---
 
 ## 📈 技术面数据
@@ -1105,6 +1129,7 @@ class GeminiAnalyzer:
 ## 📰 舆情情报
 """
         if news_context:
+            reference_links = self._extract_urls(news_context)
             prompt += f"""
 以下是 **{stock_name}({code})** 近7日的新闻搜索结果，请重点提取：
 1. 🚨 **风险警报**：减持、处罚、利空
@@ -1115,6 +1140,10 @@ class GeminiAnalyzer:
 {news_context}
 ```
 """
+            if reference_links:
+                prompt += "\n### 可用引用链接池（优先官方）\n"
+                for idx, url in enumerate(reference_links[:12], 1):
+                    prompt += f"{idx}. {url}\n"
         else:
             prompt += """
 未搜索到该股票近期的相关新闻。请主要依据技术面数据进行分析。
@@ -1153,10 +1182,50 @@ class GeminiAnalyzer:
 - **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
+- **引用证据**：`dashboard.intelligence.evidence` 至少 2 条，至少 1 条带 URL；财务相关优先官方公告链接
+- **时效说明**：`core_conclusion.time_sensitivity` 与正文必须体现交易日/周末差异
 
 请输出完整的 JSON 格式决策仪表盘。"""
         
         return prompt
+
+    def _build_time_context(self, context: Dict[str, Any]) -> str:
+        """构建时效上下文，帮助模型区分交易日/非交易日语境。"""
+        now = datetime.now()
+        analysis_date = str(context.get('date') or now.date().isoformat())
+        weekday_cn = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
+        is_weekend = now.weekday() >= 5
+        market_state = "休市(周末/节假日可能)" if is_weekend else "交易日"
+
+        lag_days = "未知"
+        try:
+            latest_date = datetime.fromisoformat(analysis_date).date()
+            lag_days = str((now.date() - latest_date).days)
+        except Exception:
+            pass
+
+        return (
+            "### ⏱ 时效上下文\n"
+            f"- 当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')} ({weekday_cn})\n"
+            f"- 市场状态: {market_state}\n"
+            f"- 技术面最新交易日: {analysis_date}\n"
+            f"- 数据时滞(天): {lag_days}\n"
+            "- 要求: 结论需说明时效边界，避免把周末消息当作当日盘中信号\n"
+        )
+
+    @staticmethod
+    def _extract_urls(text: str) -> List[str]:
+        if not text:
+            return []
+        urls = re.findall(r"https?://[^\s)\]>]+", text)
+        dedup: List[str] = []
+        seen = set()
+        for url in urls:
+            clean = url.rstrip('.,;]')
+            if clean not in seen:
+                seen.add(clean)
+                dedup.append(clean)
+        return dedup
     
     def _format_volume(self, volume: Optional[float]) -> str:
         """格式化成交量显示"""
@@ -1278,8 +1347,10 @@ class GeminiAnalyzer:
                 
                 data = json.loads(json_str)
                 
-                # 提取 dashboard 数据
-                dashboard = data.get('dashboard', None)
+                # 提取并补全 dashboard 数据
+                dashboard = self._enrich_dashboard_intelligence(data.get('dashboard', None), data)
+                dashboard = self._enrich_dashboard_timeliness(dashboard)
+                dashboard = self._enrich_dashboard_references(dashboard, code)
 
                 # 优先使用 AI 返回的股票名称（如果原名称无效或包含代码）
                 ai_stock_name = data.get('stock_name')
@@ -1364,6 +1435,114 @@ class GeminiAnalyzer:
         json_str = repair_json(json_str)
         
         return json_str
+
+    def _enrich_dashboard_intelligence(self, dashboard: Optional[Dict[str, Any]], data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        补全 dashboard.intelligence，降低模型漏填导致的“舆情信息一句话/空白”。
+        """
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+
+        intelligence = dashboard.get('intelligence')
+        if not isinstance(intelligence, dict):
+            intelligence = {}
+
+        news_summary = str(data.get('news_summary') or '').strip()
+        market_sentiment = str(data.get('market_sentiment') or '').strip()
+        risk_warning = str(data.get('risk_warning') or '').strip()
+        key_points = str(data.get('key_points') or '').strip()
+        fundamental = str(data.get('fundamental_analysis') or '').strip()
+        company_highlights = str(data.get('company_highlights') or '').strip()
+
+        if not intelligence.get('latest_news') and news_summary:
+            intelligence['latest_news'] = news_summary
+
+        if not intelligence.get('sentiment_summary') and market_sentiment:
+            intelligence['sentiment_summary'] = market_sentiment
+
+        if not intelligence.get('earnings_outlook'):
+            if fundamental:
+                intelligence['earnings_outlook'] = fundamental[:300]
+            elif company_highlights:
+                intelligence['earnings_outlook'] = company_highlights[:300]
+
+        risks = intelligence.get('risk_alerts')
+        if not isinstance(risks, list) or not risks:
+            risk_items = self._split_to_items(risk_warning)
+            intelligence['risk_alerts'] = risk_items[:3] if risk_items else []
+
+        catalysts = intelligence.get('positive_catalysts')
+        if not isinstance(catalysts, list) or not catalysts:
+            kp_items = self._split_to_items(key_points)
+            intelligence['positive_catalysts'] = kp_items[:3] if kp_items else []
+
+        evidence = intelligence.get('evidence')
+        if not isinstance(evidence, list):
+            intelligence['evidence'] = []
+
+        dashboard['intelligence'] = intelligence
+        return dashboard
+
+    def _enrich_dashboard_timeliness(self, dashboard: Dict[str, Any]) -> Dict[str, Any]:
+        """兜底补全核心结论中的 `time_sensitivity`。"""
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+
+        core = dashboard.get('core_conclusion')
+        if not isinstance(core, dict):
+            core = {}
+
+        if not core.get('time_sensitivity'):
+            now = datetime.now()
+            if now.weekday() >= 5:
+                core['time_sensitivity'] = '休市窗口，等待下个交易日验证'
+            elif now.hour >= 15:
+                core['time_sensitivity'] = '盘后结论，次日开盘重点验证'
+            else:
+                core['time_sensitivity'] = '盘中动态，今日内需跟踪波动'
+
+        dashboard['core_conclusion'] = core
+        return dashboard
+
+    def _enrich_dashboard_references(self, dashboard: Dict[str, Any], code: str) -> Dict[str, Any]:
+        """兜底补全 intelligence.evidence 至少包含官方可核验链接。"""
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+        intelligence = dashboard.get('intelligence')
+        if not isinstance(intelligence, dict):
+            intelligence = {}
+
+        evidence = intelligence.get('evidence')
+        if not isinstance(evidence, list):
+            evidence = []
+
+        has_url = any(isinstance(item, str) and 'http' in item for item in evidence)
+        code_digits = ''.join(ch for ch in str(code) if ch.isdigit())
+        if len(code_digits) == 6 and not has_url:
+            evidence.append(
+                f"[官方] {datetime.now().strftime('%Y-%m-%d')} | 巨潮资讯公告检索 | https://www.cninfo.com.cn/new/fulltextSearch?keyWord={code_digits}"
+            )
+            if code_digits.startswith('6'):
+                evidence.append(
+                    "[官方] 交易所公告 | 上交所上市公司公告 | https://www.sse.com.cn/disclosure/listedinfo/announcement/"
+                )
+            else:
+                evidence.append(
+                    "[官方] 交易所公告 | 深交所上市公司公告 | https://www.szse.cn/disclosure/listed/"
+                )
+
+        intelligence['evidence'] = evidence[:5]
+        dashboard['intelligence'] = intelligence
+        return dashboard
+
+    @staticmethod
+    def _split_to_items(text: str) -> List[str]:
+        """将逗号/顿号/分号/换行分隔文本拆分为列表。"""
+        if not text:
+            return []
+        import re
+        parts = re.split(r'[，,；;、\n]+', text)
+        return [p.strip() for p in parts if p and p.strip()]
     
     def _parse_text_response(
         self, 

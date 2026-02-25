@@ -80,6 +80,26 @@ class Config:
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
     brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
     serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
+
+    # === 结构化情报配置（方案A）===
+    finance_structured_enabled: bool = True
+    finance_max_quarters: int = 6
+
+    xueqiu_sentiment_enabled: bool = True
+    xueqiu_cookie: Optional[str] = None
+    xueqiu_user_agent: Optional[str] = None
+    xueqiu_sentiment_max_posts: int = 50
+    xueqiu_kol_users: List[str] = field(default_factory=list)
+
+    rsshub_enabled: bool = True
+    rsshub_base_url: str = "http://rsshub:1200"
+    rsshub_route_templates: List[str] = field(default_factory=list)
+    rsshub_max_items: int = 8
+
+    jina_reader_enabled: bool = False
+    jina_reader_base_url: str = "https://r.jina.ai/http://"
+    jina_reader_api_key: Optional[str] = None
+    jina_reader_min_snippet_len: int = 80
     
     # === 通知配置（可同时配置多个，全部推送）===
     
@@ -120,6 +140,11 @@ class Config:
 
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
+
+    # 分析进度提醒
+    progress_notify_enabled: bool = True
+    # 是否将进度消息广播到所有通知渠道（否则优先仅回当前会话）
+    progress_notify_broadcast: bool = False
 
     # 报告类型：simple(精简) 或 full(完整)
     report_type: str = "simple"
@@ -164,6 +189,7 @@ class Config:
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    schedule_trading_day_only: bool = True    # 定时任务仅在A股交易日执行
     market_review_enabled: bool = True        # 是否启用大盘复盘
 
     # === 实时行情增强数据配置 ===
@@ -226,6 +252,7 @@ class Config:
     wecom_token: Optional[str] = None               # 回调 Token
     wecom_encoding_aes_key: Optional[str] = None    # 消息加解密密钥
     wecom_agent_id: Optional[str] = None            # 应用 AgentId
+    wecom_agent_secret: Optional[str] = None        # 应用 Secret（主动发送消息）
     
     # Telegram 机器人 - 已有 telegram_bot_token, telegram_chat_id
     telegram_webhook_secret: Optional[str] = None   # Webhook 密钥
@@ -330,6 +357,11 @@ class Config:
         brave_keys_str = os.getenv('BRAVE_API_KEYS', '')
         brave_api_keys = [k.strip() for k in brave_keys_str.split(',') if k.strip()]
 
+        # 雪球重点关注作者（大V）
+        xueqiu_kol_users = [
+            u.strip() for u in os.getenv('XUEQIU_KOL_USERS', '').split(',') if u.strip()
+        ]
+
         # 企微消息类型与最大字节数逻辑
         wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
         wechat_msg_type_lower = wechat_msg_type.lower()
@@ -361,6 +393,21 @@ class Config:
             tavily_api_keys=tavily_api_keys,
             brave_api_keys=brave_api_keys,
             serpapi_keys=serpapi_keys,
+            finance_structured_enabled=os.getenv('FINANCE_STRUCTURED_ENABLED', 'true').lower() == 'true',
+            finance_max_quarters=int(os.getenv('FINANCE_MAX_QUARTERS', '6')),
+            xueqiu_sentiment_enabled=os.getenv('XUEQIU_SENTIMENT_ENABLED', 'true').lower() == 'true',
+            xueqiu_cookie=os.getenv('XUEQIU_COOKIE'),
+            xueqiu_user_agent=os.getenv('XUEQIU_USER_AGENT'),
+            xueqiu_sentiment_max_posts=int(os.getenv('XUEQIU_SENTIMENT_MAX_POSTS', '50')),
+            xueqiu_kol_users=xueqiu_kol_users,
+            rsshub_enabled=os.getenv('RSSHUB_ENABLED', 'true').lower() == 'true',
+            rsshub_base_url=os.getenv('RSSHUB_BASE_URL', 'http://rsshub:1200'),
+            rsshub_route_templates=[u.strip() for u in os.getenv('RSSHUB_ROUTE_TEMPLATES', '/xueqiu/stock_info/{code},/xueqiu/stock/{code}').split(',') if u.strip()],
+            rsshub_max_items=int(os.getenv('RSSHUB_MAX_ITEMS', '8')),
+            jina_reader_enabled=os.getenv('JINA_READER_ENABLED', 'false').lower() == 'true',
+            jina_reader_base_url=os.getenv('JINA_READER_BASE_URL', 'https://r.jina.ai/http://'),
+            jina_reader_api_key=os.getenv('JINA_READER_API_KEY'),
+            jina_reader_min_snippet_len=int(os.getenv('JINA_READER_MIN_SNIPPET_LEN', '80')),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
@@ -382,6 +429,8 @@ class Config:
             astrbot_url=os.getenv('ASTRBOT_URL'),
             astrbot_token=os.getenv('ASTRBOT_TOKEN'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
+            progress_notify_enabled=os.getenv('PROGRESS_NOTIFY_ENABLED', 'true').lower() == 'true',
+            progress_notify_broadcast=os.getenv('PROGRESS_NOTIFY_BROADCAST', 'false').lower() == 'true',
             report_type=os.getenv('REPORT_TYPE', 'simple').lower(),
             analysis_delay=float(os.getenv('ANALYSIS_DELAY', '0')),
             feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
@@ -402,6 +451,7 @@ class Config:
             https_proxy=os.getenv('HTTPS_PROXY'),
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
+            schedule_trading_day_only=os.getenv('SCHEDULE_TRADING_DAY_ONLY', 'true').lower() == 'true',
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
@@ -425,6 +475,7 @@ class Config:
             wecom_token=os.getenv('WECOM_TOKEN'),
             wecom_encoding_aes_key=os.getenv('WECOM_ENCODING_AES_KEY'),
             wecom_agent_id=os.getenv('WECOM_AGENT_ID'),
+            wecom_agent_secret=os.getenv('WECOM_AGENT_SECRET'),
             # Telegram
             telegram_webhook_secret=os.getenv('TELEGRAM_WEBHOOK_SECRET'),
             # Discord 机器人扩展配置

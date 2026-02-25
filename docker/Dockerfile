@@ -8,7 +8,8 @@ FROM node:20-slim AS web-builder
 WORKDIR /app/apps/dsa-web
 
 COPY apps/dsa-web/package.json apps/dsa-web/package-lock.json ./
-RUN npm ci
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm ci
 
 COPY apps/dsa-web/ ./
 RUN npm run build
@@ -23,7 +24,9 @@ ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g; s|http://deb.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=20 update \
+    && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -32,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # 安装 Python 依赖
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --retries 5 --timeout 60 -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # 复制应用代码
 COPY *.py ./

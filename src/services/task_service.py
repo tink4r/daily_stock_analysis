@@ -44,6 +44,7 @@ class TaskService:
         self._executor: Optional[ThreadPoolExecutor] = None
         self._max_workers = max_workers
         self._tasks: Dict[str, Dict[str, Any]] = {}
+        self._running_by_code: Dict[str, str] = {}
         self._tasks_lock = threading.Lock()
 
     @classmethod
@@ -90,7 +91,28 @@ class TaskService:
         if isinstance(report_type, str):
             report_type = ReportType.from_str(report_type)
 
+        # 去重：同一股票存在运行中任务时复用
+        with self._tasks_lock:
+            existing_task_id = self._running_by_code.get(code)
+            if existing_task_id and existing_task_id in self._tasks:
+                existing_status = self._tasks[existing_task_id].get("status")
+                if existing_status == "running":
+                    logger.info(
+                        f"[TaskService] 检测到重复提交，复用运行中任务: code={code}, task_id={existing_task_id}"
+                    )
+                    return {
+                        "success": True,
+                        "message": "检测到同股票任务正在执行，已复用运行中任务",
+                        "code": code,
+                        "task_id": existing_task_id,
+                        "report_type": report_type.value,
+                        "deduplicated": True,
+                    }
+
         task_id = f"{code}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+        with self._tasks_lock:
+            self._running_by_code[code] = task_id
 
         # 提交到线程池
         self.executor.submit(
@@ -167,7 +189,7 @@ class TaskService:
         try:
             # 延迟导入避免循环依赖
             from src.config import get_config
-            from main import StockAnalysisPipeline
+            from src.core.pipeline import StockAnalysisPipeline
 
             logger.info(f"[TaskService] 开始分析股票: {code}")
 
@@ -232,6 +254,12 @@ class TaskService:
                 })
 
             return {"success": False, "task_id": task_id, "error": error_msg}
+
+        finally:
+            with self._tasks_lock:
+                # 清理运行中索引（仅清理当前任务占位）
+                if self._running_by_code.get(code) == task_id:
+                    del self._running_by_code[code]
 
 
 # ============================================================

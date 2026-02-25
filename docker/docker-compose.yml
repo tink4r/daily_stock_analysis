@@ -51,15 +51,37 @@ x-common: &common
         memory: 256M
 
 services:
+  # RSSHub 新闻源服务（方案A）
+  rsshub:
+    image: diygod/rsshub:latest
+    container_name: stock-rsshub
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - CACHE_TYPE=memory
+      - PUPPETEER_WS_ENDPOINT=
+    ports:
+      - "1200:1200"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # 定时任务模式
   analyzer:
     <<: *common
     container_name: stock-analyzer
+    depends_on:
+      - rsshub
 
   # FastAPI 模式
   server:
     <<: *common
     container_name: stock-server
+    depends_on:
+      - rsshub
     command: ["python", "main.py", "--serve-only", "--host", "0.0.0.0", "--port", "${API_PORT:-8000}"]
     ports:
+      - "80:${API_PORT:-8000}"
       - "${API_PORT:-8000}:${API_PORT:-8000}"

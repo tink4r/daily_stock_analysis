@@ -18,7 +18,7 @@ import signal
 import sys
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, date
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -63,12 +63,13 @@ class Scheduler:
     - 优雅退出
     """
     
-    def __init__(self, schedule_time: str = "18:00"):
+    def __init__(self, schedule_time: str = "18:00", trading_day_only: bool = True):
         """
         初始化调度器
         
         Args:
             schedule_time: 每日执行时间，格式 "HH:MM"
+            trading_day_only: 是否仅在A股交易日执行
         """
         try:
             import schedule
@@ -78,9 +79,12 @@ class Scheduler:
             raise ImportError("请安装 schedule 库: pip install schedule")
         
         self.schedule_time = schedule_time
+        self.trading_day_only = trading_day_only
         self.shutdown_handler = GracefulShutdown()
         self._task_callback: Optional[Callable] = None
         self._running = False
+        self._trade_calendar_date: Optional[date] = None
+        self._trade_calendar_result: Optional[bool] = None
         
     def set_daily_task(self, task: Callable, run_immediately: bool = True):
         """
@@ -104,6 +108,10 @@ class Scheduler:
         """安全执行任务（带异常捕获）"""
         if self._task_callback is None:
             return
+
+        if self.trading_day_only and not self._is_a_share_trading_day(datetime.now().date()):
+            logger.info("今日非A股交易日，跳过本次定时任务")
+            return
         
         try:
             logger.info("=" * 50)
@@ -116,6 +124,56 @@ class Scheduler:
             
         except Exception as e:
             logger.exception(f"定时任务执行失败: {e}")
+
+    def _is_a_share_trading_day(self, target_date: date) -> bool:
+        """
+        判断指定日期是否为A股交易日。
+
+        优先使用 akshare 交易日历；若获取失败，回退到工作日判断（周一到周五）。
+        """
+        if self._trade_calendar_date == target_date and self._trade_calendar_result is not None:
+            return self._trade_calendar_result
+
+        # 先做快速过滤：周末直接视为非交易日
+        if target_date.weekday() >= 5:
+            self._trade_calendar_date = target_date
+            self._trade_calendar_result = False
+            return False
+
+        try:
+            import akshare as ak
+
+            trade_df = ak.tool_trade_date_hist_sina()
+            if trade_df is None or trade_df.empty or 'trade_date' not in trade_df.columns:
+                raise ValueError("akshare 返回的交易日历为空或字段缺失")
+
+            trade_series = trade_df['trade_date']
+
+            def _parse_trade_date(raw_value) -> date:
+                text = str(raw_value).strip()
+                if len(text) >= 10:
+                    text = text[:10]
+                return datetime.strptime(text, "%Y-%m-%d").date()
+
+            # 兼容字符串/时间戳/日期对象
+            if hasattr(trade_series, 'dt'):
+                try:
+                    trade_days = set(trade_series.dt.date)
+                except Exception:
+                    trade_days = set(_parse_trade_date(x) for x in trade_series)
+            else:
+                trade_days = set(_parse_trade_date(x) for x in trade_series)
+            is_trading_day = target_date in trade_days
+            self._trade_calendar_date = target_date
+            self._trade_calendar_result = is_trading_day
+            return is_trading_day
+
+        except Exception as e:
+            logger.warning(f"交易日历获取失败，回退工作日判断: {e}")
+            is_trading_day = target_date.weekday() < 5
+            self._trade_calendar_date = target_date
+            self._trade_calendar_result = is_trading_day
+            return is_trading_day
     
     def run(self):
         """
@@ -153,7 +211,8 @@ class Scheduler:
 def run_with_schedule(
     task: Callable,
     schedule_time: str = "18:00",
-    run_immediately: bool = True
+    run_immediately: bool = True,
+    trading_day_only: bool = True
 ):
     """
     便捷函数：使用定时调度运行任务
@@ -162,8 +221,9 @@ def run_with_schedule(
         task: 要执行的任务函数
         schedule_time: 每日执行时间
         run_immediately: 是否立即执行一次
+        trading_day_only: 是否仅在A股交易日执行
     """
-    scheduler = Scheduler(schedule_time=schedule_time)
+    scheduler = Scheduler(schedule_time=schedule_time, trading_day_only=trading_day_only)
     scheduler.set_daily_task(task, run_immediately=run_immediately)
     scheduler.run()
 

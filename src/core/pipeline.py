@@ -25,6 +25,9 @@ from data_provider.realtime_types import ChipDistribution
 from src.analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
+from src.services.finance_service import FinanceIntelService
+from src.services.sentiment_service import XueqiuSentimentService
+from src.services.news_service import RssNewsService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from bot.models import BotMessage
@@ -83,6 +86,11 @@ class StockAnalysisPipeline:
             brave_keys=self.config.brave_api_keys,
             serpapi_keys=self.config.serpapi_keys,
         )
+
+        # 方案A：结构化情报服务
+        self.finance_intel_service = FinanceIntelService()
+        self.sentiment_service = XueqiuSentimentService()
+        self.rss_news_service = RssNewsService()
         
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
         logger.info("已启用趋势分析器 (MA5>MA10>MA20 多头判断)")
@@ -99,6 +107,9 @@ class StockAnalysisPipeline:
             logger.info("搜索服务已启用 (Tavily/SerpAPI)")
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
+        logger.info(f"结构化财务情报: {'启用' if self.finance_intel_service.enabled else '禁用'}")
+        logger.info(f"雪球舆情抓取: {'启用' if self.sentiment_service.enabled else '禁用'}")
+        logger.info(f"RSSHub 新闻源: {'启用' if self.rss_news_service.enabled else '禁用'}")
     
     def fetch_and_save_stock_data(
         self, 
@@ -220,44 +231,8 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"[{code}] 趋势分析失败: {e}")
             
-            # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
-            news_context = None
-            if self.search_service.is_available:
-                logger.info(f"[{code}] 开始多维度情报搜索...")
-                
-                # 使用多维度搜索（最多5次搜索）
-                intel_results = self.search_service.search_comprehensive_intel(
-                    stock_code=code,
-                    stock_name=stock_name,
-                    max_searches=5
-                )
-                
-                # 格式化情报报告
-                if intel_results:
-                    news_context = self.search_service.format_intel_report(intel_results, stock_name)
-                    total_results = sum(
-                        len(r.results) for r in intel_results.values() if r.success
-                    )
-                    logger.info(f"[{code}] 情报搜索完成: 共 {total_results} 条结果")
-                    logger.debug(f"[{code}] 情报搜索结果:\n{news_context}")
-
-                    # 保存新闻情报到数据库（用于后续复盘与查询）
-                    try:
-                        query_context = self._build_query_context()
-                        for dim_name, response in intel_results.items():
-                            if response and response.success and response.results:
-                                self.db.save_news_intel(
-                                    code=code,
-                                    name=stock_name,
-                                    dimension=dim_name,
-                                    query=response.query,
-                                    response=response,
-                                    query_context=query_context
-                                )
-                    except Exception as e:
-                        logger.warning(f"[{code}] 保存新闻情报失败: {e}")
-            else:
-                logger.info(f"[{code}] 搜索服务不可用，跳过情报搜索")
+            # Step 4: 方案A情报聚合（结构化财务 + 雪球舆情 + RSSHub新闻）
+            news_context = self._build_intel_context(code=code, stock_name=stock_name)
             
             # Step 5: 获取分析上下文（技术面数据）
             context = self.db.get_analysis_context(code)
@@ -323,6 +298,71 @@ class StockAnalysisPipeline:
             logger.error(f"[{code}] 分析失败: {e}")
             logger.exception(f"[{code}] 详细错误信息:")
             return None
+
+    def _build_intel_context(self, code: str, stock_name: str) -> Optional[str]:
+        """构建方案A情报上下文，必要时回退泛搜索兜底。"""
+        blocks: List[str] = []
+
+        # 1) 结构化财务（AkShare）
+        try:
+            finance_text = self.finance_intel_service.build_finance_context(code, stock_name)
+            if finance_text:
+                blocks.append(finance_text)
+        except Exception as e:
+            logger.warning(f"[{code}] 结构化财务情报失败: {e}")
+
+        # 2) 雪球舆情
+        try:
+            sentiment_text = self.sentiment_service.build_sentiment_context(code, stock_name)
+            if sentiment_text:
+                blocks.append(sentiment_text)
+        except Exception as e:
+            logger.warning(f"[{code}] 雪球舆情抓取失败: {e}")
+
+        # 3) RSSHub 新闻
+        try:
+            news_text = self.rss_news_service.build_news_context(code, stock_name)
+            if news_text:
+                blocks.append(news_text)
+        except Exception as e:
+            logger.warning(f"[{code}] RSSHub 新闻抓取失败: {e}")
+
+        # 4) 兜底：泛搜索（避免完全空白）
+        if not blocks and self.search_service.is_available:
+            try:
+                logger.info(f"[{code}] 方案A情报为空，回退到泛搜索兜底")
+                intel_results = self.search_service.search_comprehensive_intel(
+                    stock_code=code,
+                    stock_name=stock_name,
+                    max_searches=5,
+                )
+                if intel_results:
+                    fallback_text = self.search_service.format_intel_report(intel_results, stock_name)
+                    if fallback_text:
+                        blocks.append(fallback_text)
+
+                    # 兼容历史情报落库
+                    try:
+                        query_context = self._build_query_context()
+                        for dim_name, response in intel_results.items():
+                            if response and response.success and response.results:
+                                self.db.save_news_intel(
+                                    code=code,
+                                    name=stock_name,
+                                    dimension=dim_name,
+                                    query=response.query,
+                                    response=response,
+                                    query_context=query_context,
+                                )
+                    except Exception as e:
+                        logger.warning(f"[{code}] 泛搜索情报落库失败: {e}")
+            except Exception as e:
+                logger.warning(f"[{code}] 泛搜索兜底失败: {e}")
+
+        if not blocks:
+            return None
+
+        return "\n\n---\n\n".join(blocks)
     
     def _enhance_context(
         self,
@@ -637,6 +677,10 @@ class StockAnalysisPipeline:
 
         if single_stock_notify:
             logger.info(f"已启用单股推送模式：每分析完一只股票立即推送（报告类型: {report_type_str}）")
+
+        self._notify_progress(
+            f"🚀 分析任务启动：共 {len(stock_codes)} 只股票（模式：{'dry-run' if dry_run else '完整分析'}）"
+        )
         
         results: List[AnalysisResult] = []
         
@@ -663,6 +707,16 @@ class StockAnalysisPipeline:
                     if result:
                         results.append(result)
 
+                    done = idx + 1
+                    if result:
+                        self._notify_progress(
+                            f"✅ [{done}/{len(stock_codes)}] {result.name}({code}) 完成：{result.operation_advice}，评分 {result.sentiment_score}"
+                        )
+                    else:
+                        self._notify_progress(
+                            f"⚠️ [{done}/{len(stock_codes)}] {code} 未产出有效分析结果"
+                        )
+
                     # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
                     if idx < len(stock_codes) - 1 and analysis_delay > 0:
                         logger.debug(f"等待 {analysis_delay} 秒后继续下一只股票...")
@@ -670,6 +724,9 @@ class StockAnalysisPipeline:
 
                 except Exception as e:
                     logger.error(f"[{code}] 任务执行失败: {e}")
+                    self._notify_progress(
+                        f"❌ [{idx + 1}/{len(stock_codes)}] {code} 执行失败：{str(e)[:80]}"
+                    )
         
         # 统计
         elapsed_time = time.time() - start_time
@@ -685,6 +742,9 @@ class StockAnalysisPipeline:
         
         logger.info("===== 分析完成 =====")
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
+        self._notify_progress(
+            f"🏁 分析结束：成功 {success_count}，失败 {fail_count}，耗时 {elapsed_time:.1f} 秒"
+        )
         
         # 发送通知（单股推送模式下跳过汇总推送，避免重复）
         if results and send_notification and not dry_run:
@@ -770,3 +830,27 @@ class StockAnalysisPipeline:
                 
         except Exception as e:
             logger.error(f"发送通知失败: {e}")
+
+    def _notify_progress(self, message: str, force_broadcast: bool = False) -> None:
+        """发送分析进度消息（支持上下文优先与配置化广播）。"""
+        if not getattr(self.config, 'progress_notify_enabled', True):
+            return
+
+        content = f"### ⏳ 分析进度\n{message}"
+        try:
+            context_success = False
+            if self.source_message:
+                context_success = self.notifier.send_to_context(content)
+
+            should_broadcast = (
+                force_broadcast
+                or getattr(self.config, 'progress_notify_broadcast', False)
+                or not self.source_message
+            )
+            if should_broadcast:
+                self.notifier.send(content)
+            elif not context_success and self.notifier.is_available():
+                # 兜底：有渠道但会话回复失败时，至少广播一次
+                self.notifier.send(content)
+        except Exception as e:
+            logger.debug(f"进度通知发送失败: {e}")

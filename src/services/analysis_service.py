@@ -115,6 +115,9 @@ class AnalysisService:
         sniper_points = {}
         if hasattr(result, 'get_sniper_points'):
             sniper_points = result.get_sniper_points() or {}
+
+        dashboard = getattr(result, 'dashboard', {}) or {}
+        intelligence = dashboard.get('intelligence', {}) if isinstance(dashboard, dict) else {}
         
         # 计算情绪标签
         sentiment_label = self._get_sentiment_label(result.sentiment_score)
@@ -144,6 +147,9 @@ class AnalysisService:
             },
             "details": {
                 "news_summary": result.news_summary,
+                "market_sentiment": result.market_sentiment,
+                "hot_topics": result.hot_topics,
+                "intelligence": intelligence,
                 "technical_analysis": result.technical_analysis,
                 "fundamental_analysis": result.fundamental_analysis,
                 "risk_warning": result.risk_warning,

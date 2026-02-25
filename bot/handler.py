@@ -9,6 +9,7 @@ Bot Webhook 处理器
 
 import json
 import logging
+import time
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
 from bot.models import WebhookResponse
@@ -22,6 +23,31 @@ logger = logging.getLogger(__name__)
 
 # 平台实例缓存
 _platform_instances: Dict[str, 'BotPlatform'] = {}
+
+# 短窗去重缓存：fingerprint -> ts
+_recent_message_cache: Dict[str, float] = {}
+_DUPLICATE_WINDOW_SECONDS = 120
+
+
+def _is_duplicate_message(message) -> bool:
+    """基于平台+消息ID+会话ID的短窗去重。"""
+    now = time.time()
+    # 清理过期缓存
+    expired_keys = [k for k, ts in _recent_message_cache.items() if now - ts > _DUPLICATE_WINDOW_SECONDS]
+    for k in expired_keys:
+        _recent_message_cache.pop(k, None)
+
+    message_id = getattr(message, "message_id", "") or ""
+    chat_id = getattr(message, "chat_id", "") or ""
+    content = getattr(message, "content", "") or ""
+    platform = getattr(message, "platform", "") or ""
+    fingerprint = f"{platform}:{message_id}:{chat_id}:{content.strip()}"
+
+    if fingerprint in _recent_message_cache:
+        return True
+
+    _recent_message_cache[fingerprint] = now
+    return False
 
 
 def get_platform(platform_name: str) -> Optional['BotPlatform']:
@@ -82,12 +108,19 @@ def handle_webhook(
     if not platform:
         return WebhookResponse.error(f"Unknown platform: {platform_name}", 400)
     
-    # 解析 JSON 数据
-    try:
-        data = json.loads(body.decode('utf-8')) if body else {}
-    except json.JSONDecodeError as e:
-        logger.error(f"[BotHandler] JSON 解析失败: {e}")
-        return WebhookResponse.error("Invalid JSON", 400)
+    # 解析请求数据
+    data: Dict[str, Any] = {}
+    if body:
+        try:
+            data = json.loads(body.decode('utf-8'))
+        except json.JSONDecodeError:
+            # 企业微信回调是 XML，这里保留原始 body 给平台解析
+            data = {
+                "_raw_body": body.decode('utf-8', errors='ignore')
+            }
+
+    if query_params:
+        data["_query_params"] = query_params
     
     logger.debug(f"[BotHandler] 请求数据: {json.dumps(data, ensure_ascii=False)[:500]}")
     
@@ -104,6 +137,13 @@ def handle_webhook(
         logger.debug("[BotHandler] 无需处理的消息")
         return WebhookResponse.success()
     
+    if _is_duplicate_message(message):
+        logger.info(
+            f"[BotHandler] 检测到重复消息，已忽略: platform={message.platform}, "
+            f"message_id={message.message_id}, user={message.user_name}"
+        )
+        return WebhookResponse.success()
+
     logger.info(f"[BotHandler] 解析到消息: user={message.user_name}, content={message.content[:50]}")
     
     # 分发到命令处理器

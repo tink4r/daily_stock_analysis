@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Dict, Any, Optional, List
+import re
 
 
 class ChatType(str, Enum):
@@ -78,6 +79,12 @@ class BotMessage:
         
         # 检查是否以命令前缀开头
         if not text.startswith(prefix):
+            # 纯股票代码（无命令前缀）默认按 analyze 处理
+            # A股：600519 / 港股：HK00700 / 美股：AAPL
+            stock_like = re.match(r'^(\d{6}|HK\d{5}|[A-Za-z]{1,5}(\.[A-Za-z]{1,2})?)$', text, re.IGNORECASE)
+            if stock_like:
+                return 'analyze', [text.upper()]
+
             # 尝试匹配中文命令（无前缀）
             chinese_commands = {
                 '分析': 'analyze',
@@ -162,6 +169,7 @@ class WebhookResponse:
     status_code: int = 200
     body: Dict[str, Any] = field(default_factory=dict)
     headers: Dict[str, str] = field(default_factory=dict)
+    raw_text: Optional[str] = None
     
     @classmethod
     def success(cls, body: Optional[Dict] = None) -> 'WebhookResponse':
@@ -172,6 +180,11 @@ class WebhookResponse:
     def challenge(cls, challenge: str) -> 'WebhookResponse':
         """创建验证响应（用于平台 URL 验证）"""
         return cls(status_code=200, body={"challenge": challenge})
+
+    @classmethod
+    def text(cls, text: str, status_code: int = 200) -> 'WebhookResponse':
+        """创建纯文本响应（用于部分平台 URL 验证/ACK）"""
+        return cls(status_code=status_code, raw_text=text)
     
     @classmethod
     def error(cls, message: str, status_code: int = 400) -> 'WebhookResponse':

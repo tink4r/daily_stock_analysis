@@ -24,7 +24,7 @@ from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from api.v1 import api_v1_router
 from api.middlewares.error_handler import add_error_handlers
@@ -146,6 +146,42 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         return HealthResponse(
             status="ok",
             timestamp=datetime.now().isoformat()
+        )
+
+    # ============================================================
+    # Bot Webhook 路由
+    # ============================================================
+
+    @app.api_route("/bot/{platform}", methods=["GET", "POST"], include_in_schema=False)
+    async def bot_webhook(platform: str, request: Request):
+        """机器人 Webhook 统一入口。"""
+        from bot.handler import handle_webhook
+
+        body = await request.body()
+        headers = dict(request.headers)
+
+        query_params = {}
+        for key in request.query_params.keys():
+            query_params[key] = request.query_params.getlist(key)
+
+        result = handle_webhook(
+            platform_name=platform,
+            headers=headers,
+            body=body,
+            query_params=query_params,
+        )
+
+        if result.raw_text is not None:
+            return PlainTextResponse(
+                content=result.raw_text,
+                status_code=result.status_code,
+                headers=result.headers,
+            )
+
+        return JSONResponse(
+            content=result.body,
+            status_code=result.status_code,
+            headers=result.headers,
         )
     
     # ============================================================
