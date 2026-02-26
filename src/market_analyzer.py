@@ -20,6 +20,7 @@ import pandas as pd
 
 from src.config import get_config
 from src.search_service import SearchService
+from src.services.news_service import RssNewsService
 from data_provider.base import DataFetcherManager
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,17 @@ class MarketAnalyzer:
     5. 生成大盘复盘报告
     """
     
+    MARKET_SYSTEM_PROMPT = """你是专业的A股市场复盘分析师。
+你的任务是输出结构化的【大盘复盘 Markdown 报告】。
+
+硬性要求：
+1. 只输出 Markdown 正文，不要输出 JSON。
+2. 使用以下章节：一、市场总结；二、指数点评；三、资金动向；四、热点解读；五、后市展望；六、风险提示。
+3. 结论基于输入数据与新闻，不编造不存在的数据。
+4. 当新闻较少时，明确说明“新闻样本有限”，并提高结论谨慎度。
+5. 不输出代码块。
+"""
+
     def __init__(self, search_service: Optional[SearchService] = None, analyzer=None):
         """
         初始化大盘分析器
@@ -99,6 +111,7 @@ class MarketAnalyzer:
         self.search_service = search_service
         self.analyzer = analyzer
         self.data_manager = DataFetcherManager()
+        self.rss_news_service = RssNewsService()
 
     def get_market_overview(self) -> MarketOverview:
         """
@@ -260,6 +273,12 @@ class MarketAnalyzer:
                 if response and response.results:
                     all_news.extend(response.results)
                     logger.info(f"[大盘] 搜索 '{query}' 获取 {len(response.results)} 条结果")
+
+            # 补充 RSSHub 新闻（优先作为补充；当搜索引擎失败时可兜底）
+            rss_news = self._search_market_news_via_rsshub()
+            if rss_news:
+                all_news.extend(rss_news)
+                logger.info(f"[大盘] RSSHub 补充市场新闻 {len(rss_news)} 条")
             
             logger.info(f"[大盘] 共获取 {len(all_news)} 条市场新闻")
             
@@ -267,6 +286,50 @@ class MarketAnalyzer:
             logger.error(f"[大盘] 搜索市场新闻失败: {e}")
         
         return all_news
+
+    def _search_market_news_via_rsshub(self) -> List[Dict[str, str]]:
+        """通过 RSSHub 补充大盘新闻，返回与 search_service 兼容的字典列表。"""
+        try:
+            if not getattr(self.rss_news_service, 'enabled', False):
+                return []
+
+            # 复用现有 RSSHub 服务接口，使用大盘场景路由
+            context_text = self.rss_news_service.build_news_context(
+                stock_code="market",
+                stock_name="大盘",
+                scene="market",
+            )
+            if not context_text or "未抓取到有效新闻条目" in context_text:
+                return []
+
+            lines = [ln.strip() for ln in context_text.splitlines() if ln.strip()]
+            items: List[Dict[str, str]] = []
+            current_title = ""
+            current_snippets: List[str] = []
+
+            for ln in lines:
+                # 匹配 "1. 标题" 格式
+                if len(ln) > 2 and ln[0].isdigit() and ln[1] == '.':
+                    if current_title:
+                        items.append({
+                            'title': current_title[:80],
+                            'snippet': ' '.join(current_snippets)[:220],
+                        })
+                    current_title = ln.split('.', 1)[1].strip()
+                    current_snippets = []
+                elif ln.startswith('- '):
+                    current_snippets.append(ln[2:].strip())
+
+            if current_title:
+                items.append({
+                    'title': current_title[:80],
+                    'snippet': ' '.join(current_snippets)[:220],
+                })
+
+            return items[:6]
+        except Exception as e:
+            logger.warning(f"[大盘] RSSHub 市场新闻补充失败: {e}")
+            return []
     
     def generate_market_review(self, overview: MarketOverview, news: List) -> str:
         """
@@ -290,7 +353,7 @@ class MarketAnalyzer:
             logger.info("[大盘] 调用大模型生成复盘报告...")
             
             generation_config = {
-                'temperature': 0.7,
+                'temperature': 0.4,
                 'max_output_tokens': 2048,
             }
             
@@ -328,8 +391,65 @@ class MarketAnalyzer:
             return self._generate_template_review(overview, news)
 
     def _request_market_review_once(self, prompt: str, generation_config: Dict[str, Any]) -> Optional[str]:
-        """单次请求大盘复盘文本。"""
-        if self.analyzer._use_openai:
+        """单次请求大盘复盘文本（使用市场专用 system prompt，避免个股 JSON 提示词污染）。"""
+        # OpenAI 兼容通道：直接调用 client，使用市场专用 system prompt
+        if getattr(self.analyzer, '_use_openai', False) and getattr(self.analyzer, '_openai_client', None):
+            client = self.analyzer._openai_client
+            model_name = getattr(self.analyzer, '_current_model_name', None)
+            temperature = generation_config.get('temperature', 0.4)
+            max_output_tokens = generation_config.get('max_output_tokens', 2048)
+
+            base_kwargs = {
+                'model': model_name,
+                'messages': [
+                    {'role': 'system', 'content': self.MARKET_SYSTEM_PROMPT},
+                    {'role': 'user', 'content': prompt},
+                ],
+                'temperature': temperature,
+            }
+
+            # 兼容不同 OpenAI 兼容网关的 token 参数
+            response = None
+            try:
+                response = client.chat.completions.create(**{**base_kwargs, 'max_tokens': max_output_tokens})
+            except Exception as e:
+                err = str(e).lower()
+                if 'max_tokens' in err and ('unsupported' in err or '400' in err):
+                    try:
+                        response = client.chat.completions.create(**{**base_kwargs, 'max_completion_tokens': max_output_tokens})
+                    except Exception:
+                        response = client.chat.completions.create(**base_kwargs)
+                else:
+                    raise
+
+            if response and response.choices and response.choices[0].message.content:
+                return response.choices[0].message.content.strip()
+            return None
+
+        # Gemini 通道：临时创建市场专用 model，避免复用个股 system_instruction
+        try:
+            import google.generativeai as genai
+
+            model_name = getattr(self.analyzer, '_current_model_name', None)
+            if not model_name and getattr(self.analyzer, '_model', None):
+                model_name = getattr(self.analyzer._model, 'model_name', None) or getattr(self.analyzer._model, '_model_name', None)
+
+            if model_name:
+                market_model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=self.MARKET_SYSTEM_PROMPT,
+                )
+                response = market_model.generate_content(
+                    prompt,
+                    generation_config=generation_config,
+                    request_options={"timeout": 120},
+                )
+                return response.text.strip() if response and response.text else None
+        except Exception as e:
+            logger.warning(f"[大盘] 市场专用 Gemini 通道失败，尝试回退默认通道: {e}")
+
+        # 最终回退：沿用现有 analyzer 通道
+        if getattr(self.analyzer, '_use_openai', False):
             review = self.analyzer._call_openai_api(prompt, generation_config)
             return review.strip() if review else None
 

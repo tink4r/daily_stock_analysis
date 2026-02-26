@@ -94,6 +94,8 @@ class Config:
     rsshub_enabled: bool = True
     rsshub_base_url: str = "http://rsshub:1200"
     rsshub_route_templates: List[str] = field(default_factory=list)
+    rsshub_stock_route_templates: List[str] = field(default_factory=list)
+    rsshub_market_route_templates: List[str] = field(default_factory=list)
     rsshub_max_items: int = 8
 
     jina_reader_enabled: bool = False
@@ -362,6 +364,31 @@ class Config:
             u.strip() for u in os.getenv('XUEQIU_KOL_USERS', '').split(',') if u.strip()
         ]
 
+        # RSSHub 路由模板（兼容旧配置）
+        rsshub_route_templates = [
+            u.strip() for u in os.getenv(
+                'RSSHUB_ROUTE_TEMPLATES',
+                '/xueqiu/stock_info/{code},/xueqiu/stock/{code}'
+            ).split(',') if u.strip()
+        ]
+        rsshub_stock_route_templates = [
+            u.strip() for u in os.getenv('RSSHUB_STOCK_ROUTE_TEMPLATES', '').split(',') if u.strip()
+        ]
+        rsshub_market_route_templates = [
+            u.strip() for u in os.getenv('RSSHUB_MARKET_ROUTE_TEMPLATES', '').split(',') if u.strip()
+        ]
+
+        if not rsshub_stock_route_templates:
+            rsshub_stock_route_templates = list(rsshub_route_templates)
+        if not rsshub_market_route_templates:
+            rsshub_market_route_templates = [
+                '/cls/telegraph',
+                '/wallstreetcn/news/global',
+                '/sina/finance',
+                '/xueqiu/today',
+                '/xueqiu/hot_stock_rank',
+            ]
+
         # 企微消息类型与最大字节数逻辑
         wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
         wechat_msg_type_lower = wechat_msg_type.lower()
@@ -402,7 +429,9 @@ class Config:
             xueqiu_kol_users=xueqiu_kol_users,
             rsshub_enabled=os.getenv('RSSHUB_ENABLED', 'true').lower() == 'true',
             rsshub_base_url=os.getenv('RSSHUB_BASE_URL', 'http://rsshub:1200'),
-            rsshub_route_templates=[u.strip() for u in os.getenv('RSSHUB_ROUTE_TEMPLATES', '/xueqiu/stock_info/{code},/xueqiu/stock/{code}').split(',') if u.strip()],
+            rsshub_route_templates=rsshub_route_templates,
+            rsshub_stock_route_templates=rsshub_stock_route_templates,
+            rsshub_market_route_templates=rsshub_market_route_templates,
             rsshub_max_items=int(os.getenv('RSSHUB_MAX_ITEMS', '8')),
             jina_reader_enabled=os.getenv('JINA_READER_ENABLED', 'false').lower() == 'true',
             jina_reader_base_url=os.getenv('JINA_READER_BASE_URL', 'https://r.jina.ai/http://'),

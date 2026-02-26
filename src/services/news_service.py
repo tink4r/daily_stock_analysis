@@ -37,6 +37,8 @@ class RssNewsService:
         self.enabled: bool = getattr(cfg, "rsshub_enabled", True)
         self.base_url: str = (getattr(cfg, "rsshub_base_url", "http://rsshub:1200") or "").rstrip("/")
         self.route_templates: List[str] = getattr(cfg, "rsshub_route_templates", []) or []
+        self.stock_route_templates: List[str] = getattr(cfg, "rsshub_stock_route_templates", []) or []
+        self.market_route_templates: List[str] = getattr(cfg, "rsshub_market_route_templates", []) or []
         self.max_items: int = max(1, int(getattr(cfg, "rsshub_max_items", 8)))
 
         self.jina_enabled: bool = getattr(cfg, "jina_reader_enabled", False)
@@ -44,11 +46,12 @@ class RssNewsService:
         self.jina_api_key: Optional[str] = getattr(cfg, "jina_reader_api_key", None)
         self.jina_min_snippet_len: int = max(20, int(getattr(cfg, "jina_reader_min_snippet_len", 80)))
 
-    def build_news_context(self, stock_code: str, stock_name: str) -> str:
+    def build_news_context(self, stock_code: str, stock_name: str, scene: str = "stock") -> str:
         if not self.enabled:
             return ""
 
-        items = self._fetch_news_items(stock_code, stock_name)
+        route_templates = self._resolve_route_templates(scene)
+        items = self._fetch_news_items(stock_code, stock_name, route_templates)
         if not items:
             return "### 📰 最新新闻 / 行业分析（RSSHub）\n- 未抓取到有效新闻条目"
 
@@ -64,11 +67,19 @@ class RssNewsService:
 
         return "\n".join(lines)
 
-    def _fetch_news_items(self, stock_code: str, stock_name: str) -> List[NewsItem]:
-        if not self.route_templates:
+    def _resolve_route_templates(self, scene: str) -> List[str]:
+        scene_lower = (scene or "stock").lower()
+        if scene_lower == "market":
+            routes = self.market_route_templates or self.route_templates
+        else:
+            routes = self.stock_route_templates or self.route_templates
+        return [r for r in routes if r]
+
+    def _fetch_news_items(self, stock_code: str, stock_name: str, route_templates: List[str]) -> List[NewsItem]:
+        if not route_templates:
             return []
 
-        for route_tpl in self.route_templates:
+        for route_tpl in route_templates:
             route = route_tpl.format(code=stock_code, name=quote(stock_name))
             url = f"{self.base_url}{route if route.startswith('/') else '/' + route}"
             try:

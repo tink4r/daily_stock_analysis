@@ -245,4 +245,46 @@ docker compose -f ./docker/docker-compose.yml start
 
 ---
 
+## 11. 代码改完后，如何避免立即跑定时任务并手动调试大盘复盘
+
+你提到的现象是对的：
+
+- `docker compose -f ./docker/docker-compose.yml up -d --build`
+- 如果不指定服务，会把 `analyzer` 一起拉起来
+- `analyzer` 默认命令是 `python main.py --schedule`，会进入定时任务模式
+
+### 推荐调试步骤（不取消定时任务配置，仅临时停止）
+
+```bash
+# 1) 先重建镜像（可只重建，不强行全量启动）
+docker compose -f ./docker/docker-compose.yml build
+
+# 2) 只启动你需要的基础服务（例如 server + rsshub），不要启动 analyzer
+docker compose -f ./docker/docker-compose.yml up -d server rsshub
+
+# 3) 若 analyzer 已在跑，先停掉（仅停止容器，不修改 .env）
+docker compose -f ./docker/docker-compose.yml stop analyzer
+
+# 4) 手动执行一次大盘复盘（单次运行，便于 debug）
+docker compose -f ./docker/docker-compose.yml run --rm analyzer python main.py --market-review --no-notify
+
+# 5) 查看这次手动运行日志
+docker compose -f ./docker/docker-compose.yml logs --tail=200 analyzer
+```
+
+### 调试完成后恢复定时任务
+
+```bash
+docker compose -f ./docker/docker-compose.yml up -d analyzer
+```
+
+### 只关心“是否回退模板”的快速排查
+
+```bash
+docker compose -f ./docker/docker-compose.yml logs --since 2h analyzer | \
+grep -E "\[大盘\]|JSON 串台|严格重试后仍非预期格式|回退模板|共获取 0 条市场新闻"
+```
+
+---
+
 如需我再补一版「**只保留 10 条最常用命令**」的极简速查卡片，我可以直接追加到本文末尾。
