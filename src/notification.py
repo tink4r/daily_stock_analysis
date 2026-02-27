@@ -724,12 +724,42 @@ class NotificationService:
             
             # ========== 舆情与基本面概览（放在最前面）==========
             intel = dashboard.get('intelligence', {}) if dashboard else {}
-            self._append_intelligence_section(
-                report_lines,
-                intel,
-                title="### 📰 重要信息速览",
-                latest_news_fallback=result.news_summary,
-            )
+            if intel:
+                report_lines.extend([
+                    "### 📰 重要信息速览",
+                    "",
+                ])
+                
+                # 舆情情绪总结
+                if intel.get('sentiment_summary'):
+                    report_lines.append(f"**💭 舆情情绪**: {intel['sentiment_summary']}")
+                
+                # 业绩预期
+                if intel.get('earnings_outlook'):
+                    report_lines.append(f"**📊 业绩预期**: {intel['earnings_outlook']}")
+                
+                # 风险警报（醒目显示）
+                risk_alerts = intel.get('risk_alerts', [])
+                if risk_alerts:
+                    report_lines.append("")
+                    report_lines.append("**🚨 风险警报**:")
+                    for alert in risk_alerts:
+                        report_lines.append(f"- {alert}")
+                
+                # 利好催化
+                catalysts = intel.get('positive_catalysts', [])
+                if catalysts:
+                    report_lines.append("")
+                    report_lines.append("**✨ 利好催化**:")
+                    for cat in catalysts:
+                        report_lines.append(f"- {cat}")
+                
+                # 最新消息
+                if intel.get('latest_news'):
+                    report_lines.append("")
+                    report_lines.append(f"**📢 最新动态**: {intel['latest_news']}")
+
+                report_lines.append("")
             
             # ========== 核心结论 ==========
             core = dashboard.get('core_conclusion', {}) if dashboard else {}
@@ -1129,7 +1159,6 @@ class NotificationService:
         core = dashboard.get('core_conclusion', {}) if dashboard else {}
         battle = dashboard.get('battle_plan', {}) if dashboard else {}
         intel = dashboard.get('intelligence', {}) if dashboard else {}
-        data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
         
         # 股票名称（转义 *ST 等特殊字符）
         raw_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
@@ -1153,87 +1182,62 @@ class NotificationService:
                 f"**{signal_text}**: {one_sentence}",
                 "",
             ])
-
-        # 数据透视（单股沿用汇总版核心指标，仍放在核心结论章节内）
-        if data_persp:
-            trend_data = data_persp.get('trend_status', {})
-            price_data = data_persp.get('price_position', {})
-            vol_data = data_persp.get('volume_analysis', {})
-            chip_data = data_persp.get('chip_structure', {})
-
-            lines.append("**📊 数据透视要点**")
-
-            if trend_data:
-                is_bullish = "是" if trend_data.get('is_bullish', False) else "否"
-                lines.append(
-                    f"- 趋势: 均线{trend_data.get('ma_alignment', 'N/A')} | 多头排列{is_bullish} | 趋势强度{trend_data.get('trend_score', 'N/A')}/100"
-                )
-
-            if price_data:
-                lines.append(
-                    f"- 价格: MA5 {price_data.get('ma5', 'N/A')} / MA10 {price_data.get('ma10', 'N/A')} / MA20 {price_data.get('ma20', 'N/A')}"
-                )
-                lines.append(
-                    f"- 位置: 乖离率 {price_data.get('bias_ma5', 'N/A')}%（{price_data.get('bias_status', 'N/A')}） | 支撑 {price_data.get('support_level', 'N/A')} | 压力 {price_data.get('resistance_level', 'N/A')}"
-                )
-
-            if vol_data:
-                lines.append(
-                    f"- 量能: 量比 {vol_data.get('volume_ratio', 'N/A')}（{vol_data.get('volume_status', '')}） | 换手率 {vol_data.get('turnover_rate', 'N/A')}%"
-                )
-                if vol_data.get('volume_meaning'):
-                    lines.append(f"- 量能解读: {vol_data.get('volume_meaning')}")
-
-            if chip_data:
-                lines.append(
-                    f"- 筹码: 获利比例 {chip_data.get('profit_ratio', 'N/A')} | 平均成本 {chip_data.get('avg_cost', 'N/A')} | 集中度 {chip_data.get('concentration', 'N/A')}（{chip_data.get('chip_health', 'N/A')}）"
-                )
-
-            lines.append("")
         
-        # 重要信息（舆情+基本面+新闻）
-        self._append_intelligence_section(
-            lines,
-            intel,
-            title="### 📰 重要信息",
-            latest_news_fallback=result.news_summary,
-            risk_limit=3,
-            catalyst_limit=3,
-        )
+        # 重要信息（舆情+基本面）
+        info_added = False
+        if intel:
+            if intel.get('earnings_outlook'):
+                if not info_added:
+                    lines.append("### 📰 重要信息")
+                    lines.append("")
+                    info_added = True
+                lines.append(f"📊 **业绩预期**: {intel['earnings_outlook']}")
+            
+            if intel.get('sentiment_summary'):
+                if not info_added:
+                    lines.append("### 📰 重要信息")
+                    lines.append("")
+                    info_added = True
+                lines.append(f"💭 **舆情情绪**: {intel['sentiment_summary']}")
+            
+            # 风险警报
+            risks = intel.get('risk_alerts', [])
+            if risks:
+                if not info_added:
+                    lines.append("### 📰 重要信息")
+                    lines.append("")
+                    info_added = True
+                lines.append("")
+                lines.append("🚨 **风险警报**:")
+                for risk in risks[:3]:
+                    lines.append(f"- {risk}")
+            
+            # 利好催化
+            catalysts = intel.get('positive_catalysts', [])
+            if catalysts:
+                lines.append("")
+                lines.append("✨ **利好催化**:")
+                for cat in catalysts[:3]:
+                    lines.append(f"- {cat}")
+
+        if info_added:
+            lines.append("")
         
         # 狙击点位
         sniper = battle.get('sniper_points', {}) if battle else {}
-        position = battle.get('position_strategy', {}) if battle else {}
-        checklist = battle.get('action_checklist', []) if battle else []
-        if sniper or position or checklist:
+        if sniper:
             lines.extend([
                 "### 🎯 操作点位",
                 "",
             ])
-            if sniper:
-                ideal_buy = sniper.get('ideal_buy', '-')
-                stop_loss = sniper.get('stop_loss', '-')
-                take_profit = sniper.get('take_profit', '-')
-                secondary_buy = sniper.get('secondary_buy', '-')
-                lines.append(f"- 买点(理想): {self._clean_sniper_value(ideal_buy)}")
-                lines.append(f"- 买点(次优): {self._clean_sniper_value(secondary_buy)}")
-                lines.append(f"- 止损位: {self._clean_sniper_value(stop_loss)}")
-                lines.append(f"- 目标位: {self._clean_sniper_value(take_profit)}")
-
-            # 仓位策略（来自 battle_plan）
-            if position:
-                lines.append("")
-                lines.append(f"- 仓位建议: {position.get('suggested_position', 'N/A')}")
-                lines.append(f"- 建仓策略: {position.get('entry_plan', 'N/A')}")
-                lines.append(f"- 风控策略: {position.get('risk_control', 'N/A')}")
-
-            # 检查清单（精简）
-            if checklist:
-                lines.append("")
-                lines.append("- 检查清单:")
-                for item in checklist[:5]:
-                    lines.append(f"  - {item}")
-
+            ideal_buy = sniper.get('ideal_buy', '-')
+            stop_loss = sniper.get('stop_loss', '-')
+            take_profit = sniper.get('take_profit', '-')
+            secondary_buy = sniper.get('secondary_buy', '-')
+            lines.append(f"- 买点(理想): {self._clean_sniper_value(ideal_buy)}")
+            lines.append(f"- 买点(次优): {self._clean_sniper_value(secondary_buy)}")
+            lines.append(f"- 止损位: {self._clean_sniper_value(stop_loss)}")
+            lines.append(f"- 目标位: {self._clean_sniper_value(take_profit)}")
             lines.append("")
         
         # 持仓建议
@@ -1290,71 +1294,6 @@ class NotificationService:
             ])
 
         lines.append("")
-
-    def _append_intelligence_section(
-        self,
-        lines: List[str],
-        intel: Dict[str, Any],
-        *,
-        title: str,
-        latest_news_fallback: str = "",
-        risk_limit: Optional[int] = None,
-        catalyst_limit: Optional[int] = None,
-    ) -> bool:
-        """追加情报信息块（汇总/单股共用）。返回是否写入了内容。"""
-        if not isinstance(intel, dict):
-            intel = {}
-
-        sentiment_summary = str(intel.get('sentiment_summary') or '').strip()
-        earnings_outlook = str(intel.get('earnings_outlook') or '').strip()
-        latest_news = str(intel.get('latest_news') or '').strip()
-        fallback_news = str(latest_news_fallback or '').strip()
-
-        risk_alerts = intel.get('risk_alerts', [])
-        if isinstance(risk_alerts, list) and risk_limit is not None:
-            risk_alerts = risk_alerts[:max(0, risk_limit)]
-        elif not isinstance(risk_alerts, list):
-            risk_alerts = []
-
-        catalysts = intel.get('positive_catalysts', [])
-        if isinstance(catalysts, list) and catalyst_limit is not None:
-            catalysts = catalysts[:max(0, catalyst_limit)]
-        elif not isinstance(catalysts, list):
-            catalysts = []
-
-        has_content = bool(
-            sentiment_summary or earnings_outlook or latest_news or fallback_news or risk_alerts or catalysts
-        )
-        if not has_content:
-            return False
-
-        lines.extend([title, ""])
-
-        if sentiment_summary:
-            lines.append(f"**💭 舆情情绪**: {sentiment_summary}")
-
-        if earnings_outlook:
-            lines.append(f"**📊 业绩预期**: {earnings_outlook}")
-
-        if risk_alerts:
-            lines.append("")
-            lines.append("**🚨 风险警报**:")
-            for alert in risk_alerts:
-                lines.append(f"- {alert}")
-
-        if catalysts:
-            lines.append("")
-            lines.append("**✨ 利好催化**:")
-            for cat in catalysts:
-                lines.append(f"- {cat}")
-
-        display_news = latest_news or fallback_news
-        if display_news:
-            lines.append("")
-            lines.append(f"**📰 新闻**: {display_news}")
-
-        lines.append("")
-        return True
 
     def _append_intel_references(
         self,
