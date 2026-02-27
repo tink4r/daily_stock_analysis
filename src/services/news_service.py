@@ -87,10 +87,11 @@ class RssNewsService:
         if not route_templates:
             return []
 
+        route_vars = self._build_route_vars(stock_code, stock_name)
         all_items: List[NewsItem] = []
         route_success_count = 0
         for route_tpl in route_templates:
-            route = route_tpl.format(code=stock_code, name=quote(stock_name))
+            route = self._safe_format_route(route_tpl, route_vars)
             url = f"{self.base_url}{route if route.startswith('/') else '/' + route}"
             try:
                 resp = requests.get(url, timeout=12)
@@ -121,6 +122,37 @@ class RssNewsService:
         )
         self._enhance_with_jina(selected)
         return selected
+
+    def _build_route_vars(self, stock_code: str, stock_name: str) -> Dict[str, str]:
+        code = (stock_code or "").strip()
+        name = (stock_name or "").strip()
+        return {
+            "code": code,
+            "name": quote(name),
+            "xq_id": self._to_xueqiu_symbol_id(code),
+        }
+
+    @staticmethod
+    def _safe_format_route(route_tpl: str, route_vars: Dict[str, str]) -> str:
+        class _DefaultDict(dict):
+            def __missing__(self, key):
+                return ""
+
+        return route_tpl.format_map(_DefaultDict(route_vars))
+
+    @staticmethod
+    def _to_xueqiu_symbol_id(stock_code: str) -> str:
+        """转换为雪球路由要求的代码格式：SH600519 / SZ002182。"""
+        code = (stock_code or "").strip().upper()
+        if not code:
+            return ""
+        if code.startswith(("SH", "SZ", "BJ")):
+            return code
+        if not code.isdigit() or len(code) != 6:
+            return code
+        if code.startswith(("6", "9")):
+            return f"SH{code}"
+        return f"SZ{code}"
 
     def _rank_and_filter_items(
         self,

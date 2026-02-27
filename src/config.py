@@ -381,7 +381,10 @@ class Config:
         if not rsshub_stock_route_templates:
             # 个股默认路由：先个股专属，再权威快讯源（由相关性过滤器二次筛选）
             rsshub_stock_route_templates = list(dict.fromkeys(list(rsshub_route_templates) + [
-                '/xueqiu/symbol/{code}',
+                '/xueqiu/stock_info/{xq_id}',
+                '/xueqiu/stock_info/{xq_id}/news',
+                '/xueqiu/stock_comments/{xq_id}',
+                '/xueqiu/today',
                 '/sina/rollnews',
                 '/cls/telegraph',
                 '/wallstreetcn/news/global',
