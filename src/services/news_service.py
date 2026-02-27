@@ -56,6 +56,13 @@ class RssNewsService:
         self._route_fail_threshold: int = 3
         self._route_cooldown_seconds: int = 15 * 60
 
+        # 抓取预算控制（方案A）
+        self._route_total_time_budget_seconds: float = 20.0
+        self._route_max_collected_items: int = max(self.max_items * 3, 30)
+        self._route_tier_limits_stock: Dict[str, int] = {"tier1": 6, "tier2": 5, "tier3": 4}
+        self._route_tier_limits_market: Dict[str, int] = {"tier1": 6, "tier2": 4, "tier3": 2}
+        self._route_early_stop_min_items: int = max(self.max_items, 8)
+
     def build_news_context(self, stock_code: str, stock_name: str, scene: str = "stock") -> str:
         if not self.enabled:
             return ""
@@ -95,11 +102,39 @@ class RssNewsService:
         if not route_templates:
             return []
 
+        start_ts = time.time()
         route_vars = self._build_route_vars(stock_code, stock_name)
+        route_plan = self._build_route_plan(route_templates, scene)
+        tier_limits = self._route_tier_limits_market if (scene or "stock").lower() == "market" else self._route_tier_limits_stock
+
         all_items: List[NewsItem] = []
         route_success_count = 0
         route_skip_count = 0
-        for route_tpl in route_templates:
+        tier_visit_count: Dict[str, int] = {"tier1": 0, "tier2": 0, "tier3": 0}
+        dynamic_sources_skipped = False
+
+        for route_tpl, tier in route_plan:
+            elapsed = time.time() - start_ts
+            if elapsed > self._route_total_time_budget_seconds:
+                logger.info(f"[RSSHub] 抓取预算到时（{elapsed:.1f}s），提前结束路由尝试")
+                break
+
+            if len(all_items) >= self._route_max_collected_items:
+                logger.info(f"[RSSHub] 已达到原始新闻上限 {self._route_max_collected_items}，提前结束路由尝试")
+                break
+
+            if tier_visit_count.get(tier, 0) >= tier_limits.get(tier, 0):
+                route_skip_count += 1
+                logger.info(f"[RSSHub] 分层预算已满，跳过 {tier} 路由: {route_tpl}")
+                continue
+
+            if dynamic_sources_skipped and tier == "tier3":
+                route_skip_count += 1
+                logger.info(f"[RSSHub] 已提前收敛，跳过动态路由: {route_tpl}")
+                continue
+
+            tier_visit_count[tier] = tier_visit_count.get(tier, 0) + 1
+
             if self._should_skip_route(route_tpl):
                 route_skip_count += 1
                 logger.info(f"[RSSHub] 路由冷却中，暂时跳过: {route_tpl}")
@@ -119,6 +154,17 @@ class RssNewsService:
                     self._record_route_success(route_tpl)
                     logger.info(f"[RSSHub] 命中路由 {route_tpl}，抓取 {len(items)} 条")
                     all_items.extend(items)
+
+                    # 提前收敛：如果稳定路由已拿到足够高质量样本，跳过动态源
+                    if (
+                        (scene or "stock").lower() == "stock"
+                        and tier != "tier3"
+                        and not dynamic_sources_skipped
+                        and len(all_items) >= self._route_early_stop_min_items
+                        and self._is_quality_enough_for_early_stop(all_items, stock_code, stock_name)
+                    ):
+                        dynamic_sources_skipped = True
+                        logger.info("[RSSHub] 稳定源样本质量已满足，后续动态路由将按需跳过")
                 else:
                     self._record_route_failure(route_tpl)
             except Exception as e:
@@ -126,14 +172,14 @@ class RssNewsService:
                 logger.info(f"[RSSHub] 路由 {route_tpl} 抓取失败: {e}")
 
         logger.info(
-            f"[RSSHub] {stock_name}({stock_code}) scene={scene} 路由尝试 {len(route_templates)} 条，"
+            f"[RSSHub] {stock_name}({stock_code}) scene={scene} 路由尝试 {len(route_plan)} 条，"
             f"命中 {route_success_count} 条，跳过 {route_skip_count} 条，原始新闻 {len(all_items)} 条"
         )
 
         if not all_items:
             return []
 
-        ranked_items = self._rank_and_filter_items(all_items, stock_code, stock_name, scene)
+        ranked_items = self._rank_and_filter_items(all_items, stock_code, stock_name, scene, log_stats=True)
         selected = ranked_items[: self.max_items]
         logger.info(
             f"[RSSHub] {stock_name}({stock_code}) 排序后 {len(ranked_items)} 条，"
@@ -141,6 +187,43 @@ class RssNewsService:
         )
         self._enhance_with_jina(selected)
         return selected
+
+    def _build_route_plan(self, route_templates: List[str], scene: str) -> List[Tuple[str, str]]:
+        planned: List[Tuple[str, str]] = []
+        for route in route_templates:
+            planned.append((route, self._route_tier(route, scene)))
+
+        tier_order = {"tier1": 0, "tier2": 1, "tier3": 2}
+        planned.sort(key=lambda x: tier_order.get(x[1], 9))
+        return planned
+
+    @staticmethod
+    def _route_tier(route_tpl: str, scene: str) -> str:
+        r = (route_tpl or "").lower()
+
+        if any(k in r for k in ["/xueqiu/"]):
+            return "tier3"
+        if any(k in r for k in ["/search/", "{name}", "/bse/"]):
+            return "tier2"
+        if any(k in r for k in ["/sina/", "/caijing/", "/cls/", "/wallstreetcn/"]):
+            return "tier1"
+
+        # 市场场景默认偏稳妥
+        if (scene or "stock").lower() == "market":
+            return "tier1"
+        return "tier2"
+
+    def _is_quality_enough_for_early_stop(self, items: List[NewsItem], stock_code: str, stock_name: str) -> bool:
+        ranked = self._rank_and_filter_items(items, stock_code, stock_name, scene="stock", log_stats=False)
+        if len(ranked) < self.max_items:
+            return False
+
+        top_items = ranked[: self.max_items]
+        if not top_items:
+            return False
+
+        avg_source = sum(self._source_weight(it.link) for it in top_items) / len(top_items)
+        return avg_source >= 0.85
 
     def _build_route_vars(self, stock_code: str, stock_name: str) -> Dict[str, str]:
         code = (stock_code or "").strip()
@@ -207,10 +290,12 @@ class RssNewsService:
         stock_code: str,
         stock_name: str,
         scene: str,
+        log_stats: bool = True,
     ) -> List[NewsItem]:
         deduped = self._dedupe_items(items)
         if not deduped:
-            logger.info(f"[RSSHub] {stock_name}({stock_code}) 去重后 0 条")
+            if log_stats:
+                logger.info(f"[RSSHub] {stock_name}({stock_code}) 去重后 0 条")
             return []
 
         scene_lower = (scene or "stock").lower()
@@ -225,10 +310,11 @@ class RssNewsService:
             keywords = []
             target_items = deduped
 
-        logger.info(
-            f"[RSSHub] {stock_name}({stock_code}) 去重后 {len(deduped)} 条，"
-            f"相关性命中 {related_count} 条，参与排序 {len(target_items)} 条"
-        )
+        if log_stats:
+            logger.info(
+                f"[RSSHub] {stock_name}({stock_code}) 去重后 {len(deduped)} 条，"
+                f"相关性命中 {related_count} 条，参与排序 {len(target_items)} 条"
+            )
 
         scored: List[Tuple[float, NewsItem]] = []
         for item in target_items:

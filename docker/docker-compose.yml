@@ -42,13 +42,7 @@ x-common: &common
   # DNS 兜底（减少容器内域名解析失败）
   dns:
     - 223.5.5.5
-    - 119.29.29.29
-    - 1.1.1.1
     - 8.8.8.8
-  dns_opt:
-    - timeout:2
-    - attempts:2
-    - rotate
 
   logging:
     driver: "json-file"
@@ -77,15 +71,6 @@ services:
       - CONNECTION_TIMEOUT=120000
       - ENABLE_DEBUGGER=false
     shm_size: 1gb
-    dns:
-      - 223.5.5.5
-      - 119.29.29.29
-      - 1.1.1.1
-      - 8.8.8.8
-    dns_opt:
-      - timeout:2
-      - attempts:2
-      - rotate
     logging:
       driver: "json-file"
       options:
@@ -105,13 +90,7 @@ services:
       - browserless
     dns:
       - 223.5.5.5
-      - 119.29.29.29
-      - 1.1.1.1
       - 8.8.8.8
-    dns_opt:
-      - timeout:2
-      - attempts:2
-      - rotate
     ports:
       - "1200:1200"
     logging:
