@@ -1,12 +1,12 @@
 # ===================================
 # A股自选股智能分析系统 - Docker Compose
 # ===================================
-# 
+#
 # 使用方式:
-#   基础模式(默认，不启动定时): docker-compose -f ./docker/docker-compose.yml up -d
-#   定时模式: docker-compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer
-#   FastAPI模式: docker-compose -f ./docker/docker-compose.yml up -d server
-#   同时启动(含定时): docker-compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer server
+#   基础模式(默认，不启动定时): docker compose -f ./docker/docker-compose.yml up -d
+#   定时模式: docker compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer
+#   FastAPI模式: docker compose -f ./docker/docker-compose.yml up -d server
+#   同时启动(含定时): docker compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer server
 
 version: '3.8'
 
@@ -82,17 +82,17 @@ services:
     image: diygod/rsshub:latest
     container_name: stock-rsshub
     restart: unless-stopped
-    depends_on:
-      - browserless
     environment:
       - NODE_ENV=production
       - CACHE_TYPE=memory
       - PUPPETEER_WS_ENDPOINT=ws://stock-browserless:3000?token=${BROWSERLESS_TOKEN:-rsshub}
-    ports:
-      - "1200:1200"
+    depends_on:
+      - browserless
     dns:
       - 223.5.5.5
       - 8.8.8.8
+    ports:
+      - "1200:1200"
     logging:
       driver: "json-file"
       options:
