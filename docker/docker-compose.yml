@@ -50,6 +50,24 @@ x-common: &common
   # 资源限制
   deploy:
     resources:
+      # Browserless（为 RSSHub 提供 Puppeteer/Chrome 运行时）
+      browserless:
+        image: browserless/chrome:latest
+        container_name: stock-browserless
+        restart: unless-stopped
+        environment:
+          - TOKEN=${BROWSERLESS_TOKEN:-rsshub}
+          - MAX_CONCURRENT_SESSIONS=3
+          - PREBOOT_CHROME=true
+          - CONNECTION_TIMEOUT=120000
+          - ENABLE_DEBUGGER=false
+        shm_size: 1gb
+        logging:
+          driver: "json-file"
+          options:
+            max-size: "10m"
+            max-file: "3"
+
       limits:
         memory: 512M
       reservations:
@@ -58,9 +76,11 @@ x-common: &common
 services:
   # RSSHub 新闻源服务（方案A）
   rsshub:
-    image: diygod/rsshub:latest
+          - PUPPETEER_WS_ENDPOINT=ws://stock-browserless:3000?token=${BROWSERLESS_TOKEN:-rsshub}
     container_name: stock-rsshub
     restart: unless-stopped
+        depends_on:
+          - browserless
     environment:
       - NODE_ENV=production
       - CACHE_TYPE=memory

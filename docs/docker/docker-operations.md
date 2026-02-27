@@ -21,6 +21,7 @@ cd /path/to/daily_stock_analysis
 - `stock-server`：Web/API 服务（对应 compose 服务 `server`）
 - `stock-analyzer`：定时分析任务（对应 compose 服务 `analyzer`）
 - `stock-rsshub`：RSS 新闻服务（对应 compose 服务 `rsshub`）
+- `stock-browserless`：RSSHub 动态路由浏览器运行时（对应 compose 服务 `browserless`）
 
 查看当前服务状态：
 
@@ -208,6 +209,22 @@ docker system prune -a --volumes
 ```bash
 docker compose -f ./docker/docker-compose.yml ps
 docker compose -f ./docker/docker-compose.yml logs --tail=200 server
+```
+
+### RSSHub 报错 `Could not find Chrome`
+
+这是 RSSHub 动态路由（如 `/xueqiu/today`）缺少浏览器运行时导致。
+
+```bash
+# 拉起 browserless + rsshub
+docker compose -f ./docker/docker-compose.yml up -d browserless rsshub
+
+# 查看 browserless 状态
+docker compose -f ./docker/docker-compose.yml ps browserless rsshub
+docker compose -f ./docker/docker-compose.yml logs --tail=200 browserless
+
+# 重新测试动态路由
+curl -sS http://127.0.0.1:1200/xueqiu/today | head -n 20
 ```
 
 ### API 无法访问
