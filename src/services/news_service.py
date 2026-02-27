@@ -12,8 +12,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional
-from urllib.parse import quote
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
 
 import requests
@@ -51,7 +53,7 @@ class RssNewsService:
             return ""
 
         route_templates = self._resolve_route_templates(scene)
-        items = self._fetch_news_items(stock_code, stock_name, route_templates)
+        items = self._fetch_news_items(stock_code, stock_name, route_templates, scene=scene)
         if not items:
             return "### 📰 最新新闻 / 行业分析（RSSHub）\n- 未抓取到有效新闻条目"
 
@@ -75,10 +77,17 @@ class RssNewsService:
             routes = self.stock_route_templates or self.route_templates
         return [r for r in routes if r]
 
-    def _fetch_news_items(self, stock_code: str, stock_name: str, route_templates: List[str]) -> List[NewsItem]:
+    def _fetch_news_items(
+        self,
+        stock_code: str,
+        stock_name: str,
+        route_templates: List[str],
+        scene: str = "stock",
+    ) -> List[NewsItem]:
         if not route_templates:
             return []
 
+        all_items: List[NewsItem] = []
         for route_tpl in route_templates:
             route = route_tpl.format(code=stock_code, name=quote(stock_name))
             url = f"{self.base_url}{route if route.startswith('/') else '/' + route}"
@@ -90,12 +99,161 @@ class RssNewsService:
                 items = self._parse_feed(resp.text)
                 if items:
                     logger.info(f"[RSSHub] 命中路由 {route_tpl}，抓取 {len(items)} 条")
-                    self._enhance_with_jina(items)
-                    return items
+                    all_items.extend(items)
             except Exception as e:
                 logger.debug(f"[RSSHub] 路由 {route_tpl} 抓取失败: {e}")
 
-        return []
+        if not all_items:
+            return []
+
+        ranked_items = self._rank_and_filter_items(all_items, stock_code, stock_name, scene)
+        selected = ranked_items[: self.max_items]
+        self._enhance_with_jina(selected)
+        return selected
+
+    def _rank_and_filter_items(
+        self,
+        items: List[NewsItem],
+        stock_code: str,
+        stock_name: str,
+        scene: str,
+    ) -> List[NewsItem]:
+        deduped = self._dedupe_items(items)
+        if not deduped:
+            return []
+
+        scene_lower = (scene or "stock").lower()
+        if scene_lower == "stock":
+            keywords = self._build_stock_keywords(stock_code, stock_name)
+            related = [it for it in deduped if self._is_stock_related(it, keywords)]
+            # 若严格筛选后为空，降级为不过滤但仍排序，避免上下文完全空白
+            target_items = related if related else deduped
+        else:
+            keywords = []
+            target_items = deduped
+
+        scored: List[Tuple[float, NewsItem]] = []
+        for item in target_items:
+            score = self._score_item(item, stock_code, stock_name, keywords, scene_lower)
+            scored.append((score, item))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored]
+
+    def _dedupe_items(self, items: List[NewsItem]) -> List[NewsItem]:
+        seen: Dict[str, bool] = {}
+        output: List[NewsItem] = []
+        for item in items:
+            title_key = re.sub(r"\s+", "", (item.title or "").lower())
+            link_key = (item.link or "").strip().lower()
+            key = f"{title_key}|{link_key}"
+            if key in seen:
+                continue
+            seen[key] = True
+            output.append(item)
+        return output
+
+    def _build_stock_keywords(self, stock_code: str, stock_name: str) -> List[str]:
+        code = (stock_code or "").strip()
+        name = (stock_name or "").strip()
+        keywords = [k for k in [name, code] if k]
+        # 常见代码形态补充（如 sh600519/sz000001）
+        if code and code.isdigit() and len(code) == 6:
+            if code.startswith(("6", "9")):
+                keywords.append(f"sh{code}")
+            else:
+                keywords.append(f"sz{code}")
+        return list(dict.fromkeys([k.lower() for k in keywords]))
+
+    def _is_stock_related(self, item: NewsItem, keywords: List[str]) -> bool:
+        if not keywords:
+            return True
+        text = f"{item.title} {item.summary}".lower()
+        return any(k and k in text for k in keywords)
+
+    def _score_item(
+        self,
+        item: NewsItem,
+        stock_code: str,
+        stock_name: str,
+        keywords: List[str],
+        scene: str,
+    ) -> float:
+        text = f"{item.title} {item.summary}".lower()
+        title_text = (item.title or "").lower()
+        score = 0.0
+
+        if scene == "stock":
+            for kw in keywords:
+                if not kw:
+                    continue
+                if kw in text:
+                    score += 2.0
+                if kw in title_text:
+                    score += 1.5
+
+            # 代码命中额外加权
+            code = (stock_code or "").lower()
+            if code and code in text:
+                score += 2.5
+            name = (stock_name or "").lower()
+            if name and name in title_text:
+                score += 2.0
+
+        score += self._source_weight(item.link)
+        score += self._recency_weight(item.published)
+        return score
+
+    def _source_weight(self, link: str) -> float:
+        if not link:
+            return 0.0
+        try:
+            host = (urlparse(link).netloc or "").lower()
+        except Exception:
+            return 0.0
+
+        # 轻量来源权重：更权威/时效源略微优先
+        if any(k in host for k in ["cls.cn", "wallstreetcn.com", "sina.com.cn"]):
+            return 1.2
+        if any(k in host for k in ["xueqiu.com", "eastmoney.com", "cnstock.com"]):
+            return 0.8
+        return 0.3
+
+    def _recency_weight(self, published: str) -> float:
+        dt = self._parse_datetime(published)
+        if not dt:
+            return 0.0
+
+        now = datetime.now(timezone.utc)
+        age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
+        if age_hours <= 24:
+            return 1.2
+        if age_hours <= 72:
+            return 0.8
+        if age_hours <= 168:
+            return 0.4
+        return 0.1
+
+    def _parse_datetime(self, value: str) -> Optional[datetime]:
+        text = (value or "").strip()
+        if not text:
+            return None
+
+        # RFC2822 / RSS pubDate
+        try:
+            dt = parsedate_to_datetime(text)
+            if dt is not None:
+                return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+        # 常见 ISO 格式
+        try:
+            iso = text.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
 
     def _parse_feed(self, xml_text: str) -> List[NewsItem]:
         items: List[NewsItem] = []

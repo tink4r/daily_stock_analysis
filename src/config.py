@@ -379,12 +379,18 @@ class Config:
         ]
 
         if not rsshub_stock_route_templates:
-            rsshub_stock_route_templates = list(rsshub_route_templates)
+            # 个股默认路由：先个股专属，再权威快讯源（由相关性过滤器二次筛选）
+            rsshub_stock_route_templates = list(dict.fromkeys(list(rsshub_route_templates) + [
+                '/xueqiu/symbol/{code}',
+                '/sina/rollnews',
+                '/cls/telegraph',
+                '/wallstreetcn/news/global',
+            ]))
         if not rsshub_market_route_templates:
             rsshub_market_route_templates = [
                 '/cls/telegraph',
                 '/wallstreetcn/news/global',
-                '/sina/finance',
+                '/sina/rollnews',
                 '/xueqiu/today',
                 '/xueqiu/hot_stock_rank',
             ]
