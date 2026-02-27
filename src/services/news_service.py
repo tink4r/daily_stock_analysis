@@ -10,7 +10,9 @@ RSSHub 新闻情报服务
 from __future__ import annotations
 
 import logging
+import random
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -47,6 +49,12 @@ class RssNewsService:
         self.jina_base_url: str = getattr(cfg, "jina_reader_base_url", "https://r.jina.ai/http://")
         self.jina_api_key: Optional[str] = getattr(cfg, "jina_reader_api_key", None)
         self.jina_min_snippet_len: int = max(20, int(getattr(cfg, "jina_reader_min_snippet_len", 80)))
+
+        # 路由稳定性控制（抗反爬/抗抖动）
+        self._route_fail_counts: Dict[str, int] = {}
+        self._route_last_fail_ts: Dict[str, float] = {}
+        self._route_fail_threshold: int = 3
+        self._route_cooldown_seconds: int = 15 * 60
 
     def build_news_context(self, stock_code: str, stock_name: str, scene: str = "stock") -> str:
         if not self.enabled:
@@ -90,25 +98,36 @@ class RssNewsService:
         route_vars = self._build_route_vars(stock_code, stock_name)
         all_items: List[NewsItem] = []
         route_success_count = 0
+        route_skip_count = 0
         for route_tpl in route_templates:
+            if self._should_skip_route(route_tpl):
+                route_skip_count += 1
+                logger.info(f"[RSSHub] 路由冷却中，暂时跳过: {route_tpl}")
+                continue
+
             route = self._safe_format_route(route_tpl, route_vars)
             url = f"{self.base_url}{route if route.startswith('/') else '/' + route}"
             try:
-                resp = requests.get(url, timeout=12)
+                resp = self._request_with_retry(url)
                 if resp.status_code != 200:
-                    logger.debug(f"[RSSHub] {url} 返回 HTTP {resp.status_code}")
+                    self._record_route_failure(route_tpl)
+                    logger.info(f"[RSSHub] {url} 返回 HTTP {resp.status_code}")
                     continue
                 items = self._parse_feed(resp.text)
                 if items:
                     route_success_count += 1
+                    self._record_route_success(route_tpl)
                     logger.info(f"[RSSHub] 命中路由 {route_tpl}，抓取 {len(items)} 条")
                     all_items.extend(items)
+                else:
+                    self._record_route_failure(route_tpl)
             except Exception as e:
-                logger.debug(f"[RSSHub] 路由 {route_tpl} 抓取失败: {e}")
+                self._record_route_failure(route_tpl)
+                logger.info(f"[RSSHub] 路由 {route_tpl} 抓取失败: {e}")
 
         logger.info(
             f"[RSSHub] {stock_name}({stock_code}) scene={scene} 路由尝试 {len(route_templates)} 条，"
-            f"命中 {route_success_count} 条，原始新闻 {len(all_items)} 条"
+            f"命中 {route_success_count} 条，跳过 {route_skip_count} 条，原始新闻 {len(all_items)} 条"
         )
 
         if not all_items:
@@ -131,6 +150,34 @@ class RssNewsService:
             "name": quote(name),
             "xq_id": self._to_xueqiu_symbol_id(code),
         }
+
+    def _request_with_retry(self, url: str) -> requests.Response:
+        last_error: Optional[Exception] = None
+        for attempt in range(3):
+            try:
+                return requests.get(url, timeout=12)
+            except Exception as e:
+                last_error = e
+                # 轻量随机抖动，减少短时间集中失败
+                time.sleep(0.4 + random.random() * 0.8 + attempt * 0.2)
+        if last_error:
+            raise last_error
+        raise RuntimeError("RSSHub request failed without explicit exception")
+
+    def _should_skip_route(self, route_tpl: str) -> bool:
+        fail_count = self._route_fail_counts.get(route_tpl, 0)
+        if fail_count < self._route_fail_threshold:
+            return False
+        last_ts = self._route_last_fail_ts.get(route_tpl, 0)
+        return (time.time() - last_ts) < self._route_cooldown_seconds
+
+    def _record_route_failure(self, route_tpl: str) -> None:
+        self._route_fail_counts[route_tpl] = self._route_fail_counts.get(route_tpl, 0) + 1
+        self._route_last_fail_ts[route_tpl] = time.time()
+
+    def _record_route_success(self, route_tpl: str) -> None:
+        self._route_fail_counts.pop(route_tpl, None)
+        self._route_last_fail_ts.pop(route_tpl, None)
 
     @staticmethod
     def _safe_format_route(route_tpl: str, route_vars: Dict[str, str]) -> str:
