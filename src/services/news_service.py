@@ -88,6 +88,7 @@ class RssNewsService:
             return []
 
         all_items: List[NewsItem] = []
+        route_success_count = 0
         for route_tpl in route_templates:
             route = route_tpl.format(code=stock_code, name=quote(stock_name))
             url = f"{self.base_url}{route if route.startswith('/') else '/' + route}"
@@ -98,16 +99,26 @@ class RssNewsService:
                     continue
                 items = self._parse_feed(resp.text)
                 if items:
+                    route_success_count += 1
                     logger.info(f"[RSSHub] 命中路由 {route_tpl}，抓取 {len(items)} 条")
                     all_items.extend(items)
             except Exception as e:
                 logger.debug(f"[RSSHub] 路由 {route_tpl} 抓取失败: {e}")
+
+        logger.info(
+            f"[RSSHub] {stock_name}({stock_code}) scene={scene} 路由尝试 {len(route_templates)} 条，"
+            f"命中 {route_success_count} 条，原始新闻 {len(all_items)} 条"
+        )
 
         if not all_items:
             return []
 
         ranked_items = self._rank_and_filter_items(all_items, stock_code, stock_name, scene)
         selected = ranked_items[: self.max_items]
+        logger.info(
+            f"[RSSHub] {stock_name}({stock_code}) 排序后 {len(ranked_items)} 条，"
+            f"Top-N 输出 {len(selected)} 条（RSSHUB_MAX_ITEMS={self.max_items}）"
+        )
         self._enhance_with_jina(selected)
         return selected
 
@@ -120,17 +131,25 @@ class RssNewsService:
     ) -> List[NewsItem]:
         deduped = self._dedupe_items(items)
         if not deduped:
+            logger.info(f"[RSSHub] {stock_name}({stock_code}) 去重后 0 条")
             return []
 
         scene_lower = (scene or "stock").lower()
+        related_count = len(deduped)
         if scene_lower == "stock":
             keywords = self._build_stock_keywords(stock_code, stock_name)
             related = [it for it in deduped if self._is_stock_related(it, keywords)]
+            related_count = len(related)
             # 若严格筛选后为空，降级为不过滤但仍排序，避免上下文完全空白
             target_items = related if related else deduped
         else:
             keywords = []
             target_items = deduped
+
+        logger.info(
+            f"[RSSHub] {stock_name}({stock_code}) 去重后 {len(deduped)} 条，"
+            f"相关性命中 {related_count} 条，参与排序 {len(target_items)} 条"
+        )
 
         scored: List[Tuple[float, NewsItem]] = []
         for item in target_items:

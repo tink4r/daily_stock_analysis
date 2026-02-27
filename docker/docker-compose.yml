@@ -3,9 +3,10 @@
 # ===================================
 # 
 # 使用方式:
-#   定时模式: docker-compose -f ./docker/docker-compose.yml up -d
+#   基础模式(默认，不启动定时): docker-compose -f ./docker/docker-compose.yml up -d
+#   定时模式: docker-compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer
 #   FastAPI模式: docker-compose -f ./docker/docker-compose.yml up -d server
-#   同时启动: docker-compose -f ./docker/docker-compose.yml up -d analyzer server
+#   同时启动(含定时): docker-compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer server
 
 version: '3.8'
 
@@ -37,6 +38,10 @@ x-common: &common
     # 代理设置（如果需要）
     # - http_proxy=http://host.docker.internal:10809
     # - https_proxy=http://host.docker.internal:10809
+  # DNS 兜底（减少容器内域名解析失败）
+  dns:
+    - 223.5.5.5
+    - 8.8.8.8
   logging:
     driver: "json-file"
     options:
@@ -60,6 +65,9 @@ services:
       - NODE_ENV=production
       - CACHE_TYPE=memory
       - PUPPETEER_WS_ENDPOINT=
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8
     ports:
       - "1200:1200"
     logging:
@@ -72,6 +80,8 @@ services:
   analyzer:
     <<: *common
     container_name: stock-analyzer
+    profiles:
+      - schedule
     depends_on:
       - rsshub
 

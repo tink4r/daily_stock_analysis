@@ -38,11 +38,14 @@ docker compose -f ./docker/docker-compose.yml ps
 # 启动 Web/API
 docker compose -f ./docker/docker-compose.yml up -d server
 
-# 启动定时分析
-docker compose -f ./docker/docker-compose.yml up -d analyzer
+# 启动定时分析（需启用 schedule profile）
+docker compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer
 
-# 同时启动所有服务
+# 同时启动基础服务（默认：server + rsshub，不会自动启动 analyzer）
 docker compose -f ./docker/docker-compose.yml up -d
+
+# 同时启动全部（含 analyzer 定时任务）
+docker compose -f ./docker/docker-compose.yml --profile schedule up -d
 ```
 
 ### 停止服务（保留容器）
@@ -247,11 +250,11 @@ docker compose -f ./docker/docker-compose.yml start
 
 ## 11. 代码改完后，如何避免立即跑定时任务并手动调试大盘复盘
 
-你提到的现象是对的：
+你提到的现象已经优化：
 
-- `docker compose -f ./docker/docker-compose.yml up -d --build`
-- 如果不指定服务，会把 `analyzer` 一起拉起来
-- `analyzer` 默认命令是 `python main.py --schedule`，会进入定时任务模式
+- 当前 compose 已将 `analyzer` 放入 `schedule` profile。
+- 默认 `up -d --build` 不会启动 `analyzer`。
+- 只有显式加 `--profile schedule` 或单独启动 `analyzer` 才会跑定时任务。
 
 ### 推荐调试步骤（不取消定时任务配置，仅临时停止）
 
@@ -259,7 +262,7 @@ docker compose -f ./docker/docker-compose.yml start
 # 1) 先重建镜像（可只重建，不强行全量启动）
 docker compose -f ./docker/docker-compose.yml build
 
-# 2) 只启动你需要的基础服务（例如 server + rsshub），不要启动 analyzer
+# 2) 只启动你需要的基础服务（例如 server + rsshub），不会启动 analyzer
 docker compose -f ./docker/docker-compose.yml up -d server rsshub
 
 # 3) 若 analyzer 已在跑，先停掉（仅停止容器，不修改 .env）
@@ -275,7 +278,7 @@ docker compose -f ./docker/docker-compose.yml logs --tail=200 analyzer
 ### 调试完成后恢复定时任务
 
 ```bash
-docker compose -f ./docker/docker-compose.yml up -d analyzer
+docker compose -f ./docker/docker-compose.yml --profile schedule up -d analyzer
 ```
 
 ### 只关心“是否回退模板”的快速排查

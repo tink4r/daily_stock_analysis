@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import socket
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -80,6 +81,14 @@ class XueqiuSentimentService:
         return "\n".join(lines)
 
     def _fetch_sentiment(self, stock_code: str, stock_name: str) -> SentimentResult:
+        # 先做域名解析预检，避免报错信息不清晰
+        try:
+            socket.getaddrinfo("xueqiu.com", 443)
+        except socket.gaierror as e:
+            msg = f"DNS解析失败（xueqiu.com）: {e}，请检查容器 DNS / 代理配置"
+            logger.warning(f"[雪球舆情] {msg}")
+            return SentimentResult(0, [], [], error=msg)
+
         session = requests.Session()
         headers = {
             "User-Agent": self.user_agent,
@@ -133,6 +142,14 @@ class XueqiuSentimentService:
 
             return SentimentResult(len(posts), highlights, kol_highlights)
 
+        except requests.exceptions.Timeout as e:
+            msg = f"请求超时: {e}"
+            logger.warning(f"[雪球舆情] 抓取失败: {msg}")
+            return SentimentResult(0, [], [], error=msg)
+        except requests.exceptions.ConnectionError as e:
+            msg = f"网络连接失败（可能为DNS/网络不可达）: {e}"
+            logger.warning(f"[雪球舆情] 抓取失败: {msg}")
+            return SentimentResult(0, [], [], error=msg)
         except Exception as e:
             logger.warning(f"[雪球舆情] 抓取失败: {e}")
             return SentimentResult(0, [], [], error=str(e))
