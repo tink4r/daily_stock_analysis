@@ -534,7 +534,7 @@ def main() -> int:
             run_with_schedule(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
-                run_immediately=True,  # 启动时先执行一次
+                run_immediately=False,  # Only execute at scheduled time after startup.
                 trading_day_only=getattr(config, 'schedule_trading_day_only', True)
             )
             return 0
