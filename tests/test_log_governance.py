@@ -92,11 +92,15 @@ class TestPurgeOldLogs(unittest.TestCase):
         self.assertEqual(deleted, 0)
 
     def test_unreadable_date_is_skipped(self):
-        weird = self.logs / f"{self.prefix}_notadate.log"
-        self._touch(weird)
-        deleted = purge_old_logs(str(self.logs), log_prefix=self.prefix, now=self.now)
+        invalid_date = self.logs / f"{self.prefix}_20261301.log"
+        self._touch(invalid_date)
+        with self.assertLogs("root", level="WARNING") as logs:
+            deleted = purge_old_logs(str(self.logs), log_prefix=self.prefix, now=self.now)
         self.assertEqual(deleted, 0)
-        self.assertTrue(weird.exists())
+        self.assertTrue(invalid_date.exists())
+        self.assertTrue(
+            any("Skipping log file with unparseable date" in record.message for record in logs.records)
+        )
 
 
 if __name__ == "__main__":
