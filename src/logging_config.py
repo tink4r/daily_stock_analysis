@@ -11,6 +11,7 @@
 """
 
 import logging
+import re
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
@@ -31,6 +32,96 @@ DEFAULT_QUIET_LOGGERS = [
     'google',
     'httpx',
 ]
+
+_SIZE_SUFFIX = re.compile(r"^(\d{1,2})$")
+
+
+def _parse_yyyy_mm_dd(value: str):
+    """Parse YYYYMMDD into a date, or None if invalid."""
+    try:
+        return datetime.strptime(value, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def purge_old_logs(
+    log_dir: str,
+    log_prefix: str = "stock_analysis",
+    retention_days: int = 7,
+    debug_retention_days: int = 3,
+    now: Optional[datetime] = None,
+) -> int:
+    """
+    Delete expired log files for one prefix. Never raises.
+
+    Returns the number of files successfully deleted.
+    """
+    base = Path(log_dir)
+    if not base.is_dir():
+        return 0
+
+    current = (now or datetime.now()).date()
+    deleted = 0
+    prefix = log_prefix
+
+    for path in list(base.iterdir()):
+        if not path.is_file():
+            continue
+        name = path.name
+        try:
+            should_delete = _should_delete_log_file(
+                name=name,
+                prefix=prefix,
+                current=current,
+                retention_days=retention_days,
+                debug_retention_days=debug_retention_days,
+            )
+            if should_delete is None:
+                logging.warning("Skipping log file with unparseable date: %s", name)
+                continue
+            if should_delete:
+                path.unlink()
+                deleted += 1
+        except OSError as exc:
+            logging.warning("Failed to delete log file %s: %s", path, exc)
+    return deleted
+
+
+def _should_delete_log_file(
+    name: str,
+    prefix: str,
+    current,
+    retention_days: int,
+    debug_retention_days: int,
+):
+    """
+    Return True to delete, False to keep, None if the name looks dated but the date is invalid.
+    """
+    size_match = re.fullmatch(
+        rf"{re.escape(prefix)}(?:_debug)?(?:_\d{{8}})?\.log\.(\d{{1,2}})",
+        name,
+    )
+    if size_match and _SIZE_SUFFIX.fullmatch(size_match.group(1)):
+        if len(size_match.group(1)) <= 2:
+            return True
+
+    patterns = (
+        (rf"{re.escape(prefix)}_(\d{{8}})\.log$", False),
+        (rf"{re.escape(prefix)}_debug_(\d{{8}})\.log$", True),
+        (rf"{re.escape(prefix)}\.log\.(\d{{8}})$", False),
+        (rf"{re.escape(prefix)}_debug\.log\.(\d{{8}})$", True),
+    )
+    for pattern, is_debug in patterns:
+        match = re.fullmatch(pattern, name)
+        if not match:
+            continue
+        parsed = _parse_yyyy_mm_dd(match.group(1))
+        if parsed is None:
+            return None
+        limit = debug_retention_days if is_debug else retention_days
+        return (current - parsed).days > limit
+
+    return False
 
 
 def setup_logging(
