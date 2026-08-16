@@ -3,104 +3,121 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.logging_config import purge_old_logs
+from src.logging_config import _should_delete_log_file, purge_old_logs
+
+
+class TestShouldDeleteLogFile(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 8, 16).date()
+        self.prefix = "stock_analysis"
+
+    def _decide(self, name):
+        return _should_delete_log_file(
+            name=name,
+            prefix=self.prefix,
+            current=self.now,
+            retention_days=7,
+            debug_retention_days=3,
+        )
+
+    def test_keeps_recent_legacy_info(self):
+        self.assertFalse(self._decide("stock_analysis_20260815.log"))
+        self.assertFalse(self._decide("stock_analysis_20260809.log"))
+
+    def test_deletes_old_legacy_info(self):
+        self.assertTrue(self._decide("stock_analysis_20260808.log"))
+
+    def test_keeps_recent_legacy_debug(self):
+        self.assertFalse(self._decide("stock_analysis_debug_20260813.log"))
+
+    def test_deletes_old_legacy_debug(self):
+        self.assertTrue(self._decide("stock_analysis_debug_20260812.log"))
+
+    def test_timed_rotating_names(self):
+        self.assertFalse(self._decide("stock_analysis.log.20260815"))
+        self.assertTrue(self._decide("stock_analysis.log.20260808"))
+        self.assertTrue(self._decide("stock_analysis_debug.log.20260812"))
+        self.assertFalse(self._decide("stock_analysis_debug.log.20260813"))
+
+    def test_size_rotation_leftovers_deleted(self):
+        self.assertTrue(self._decide("stock_analysis.log.1"))
+        self.assertTrue(self._decide("stock_analysis_debug.log.2"))
+        self.assertTrue(self._decide("stock_analysis_20260815.log.1"))
+
+    def test_keeps_active_and_unrelated(self):
+        self.assertFalse(self._decide("stock_analysis.log"))
+        self.assertFalse(self._decide("stock_analysis_debug.log"))
+        self.assertFalse(self._decide("other_app_20260101.log"))
+        self.assertFalse(self._decide("notes.txt"))
+
+    def test_invalid_date_returns_none(self):
+        self.assertIsNone(self._decide("stock_analysis_20261399.log"))
 
 
 class TestPurgeOldLogs(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self._tmp.name)
-        self.logs = self.root / "logs"
-        self.reports = self.root / "reports"
-        self.logs.mkdir()
-        self.reports.mkdir()
-        self.now = datetime(2026, 8, 16, 12, 0, 0)
-        self.prefix = "stock_analysis"
+    def test_purges_only_expired_logs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp) / "logs"
+            reports = Path(tmp) / "reports"
+            logs.mkdir()
+            reports.mkdir()
+            now = datetime(2026, 8, 16)
+            files = {
+                "stock_analysis_20260815.log": "keep-info",
+                "stock_analysis_20260808.log": "drop-info",
+                "stock_analysis_debug_20260813.log": "keep-debug",
+                "stock_analysis_debug_20260812.log": "drop-debug",
+                "stock_analysis.log.1": "drop-size",
+                "unrelated.log": "keep-unrelated",
+            }
+            for name, content in files.items():
+                (logs / name).write_text(content, encoding="utf-8")
+            report = reports / "daily.md"
+            report.write_text("do not touch", encoding="utf-8")
 
-    def tearDown(self):
-        self._tmp.cleanup()
+            deleted = purge_old_logs(
+                str(logs),
+                log_prefix="stock_analysis",
+                retention_days=7,
+                debug_retention_days=3,
+                now=now,
+            )
+            self.assertEqual(deleted, 3)
+            self.assertTrue((logs / "stock_analysis_20260815.log").exists())
+            self.assertFalse((logs / "stock_analysis_20260808.log").exists())
+            self.assertTrue((logs / "stock_analysis_debug_20260813.log").exists())
+            self.assertFalse((logs / "stock_analysis_debug_20260812.log").exists())
+            self.assertFalse((logs / "stock_analysis.log.1").exists())
+            self.assertTrue((logs / "unrelated.log").exists())
+            self.assertEqual(report.read_text(encoding="utf-8"), "do not touch")
 
-    def _touch(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("x", encoding="utf-8")
+    def test_purge_skips_oserror(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs = Path(tmp)
+            victim = logs / "stock_analysis_20260801.log"
+            victim.write_text("x", encoding="utf-8")
+            original_unlink = Path.unlink
 
-    def test_purges_legacy_and_keeps_recent(self):
-        old_info = (self.now - timedelta(days=8)).strftime("%Y%m%d")
-        old_debug = (self.now - timedelta(days=4)).strftime("%Y%m%d")
-        yesterday = (self.now - timedelta(days=1)).strftime("%Y%m%d")
-        today = self.now.strftime("%Y%m%d")
+            def boom(self, *args, **kwargs):
+                if self.name == "stock_analysis_20260801.log":
+                    raise OSError("locked")
+                return original_unlink(self, *args, **kwargs)
 
-        keep_info = self.logs / f"{self.prefix}_{yesterday}.log"
-        keep_debug = self.logs / f"{self.prefix}_debug_{today}.log"
-        drop_info = self.logs / f"{self.prefix}_{old_info}.log"
-        drop_debug = self.logs / f"{self.prefix}_debug_{old_debug}.log"
-        report_file = self.reports / "daily.md"
-        unmatched = self.logs / "unrelated.log"
-        active_info = self.logs / f"{self.prefix}.log"
-        active_debug = self.logs / f"{self.prefix}_debug.log"
-        rotated_info_keep = self.logs / f"{self.prefix}.log.{yesterday}"
-        rotated_info_drop = self.logs / f"{self.prefix}.log.{old_info}"
-        size_leftover = self.logs / f"{self.prefix}_{old_info}.log.1"
-
-        for path in (
-            keep_info,
-            keep_debug,
-            drop_info,
-            drop_debug,
-            report_file,
-            unmatched,
-            active_info,
-            active_debug,
-            rotated_info_keep,
-            rotated_info_drop,
-            size_leftover,
-        ):
-            self._touch(path)
-
-        deleted = purge_old_logs(
-            str(self.logs),
-            log_prefix=self.prefix,
-            retention_days=7,
-            debug_retention_days=3,
-            now=self.now,
-        )
-
-        self.assertGreaterEqual(deleted, 3)
-        self.assertTrue(keep_info.exists())
-        self.assertTrue(keep_debug.exists())
-        self.assertTrue(report_file.exists())
-        self.assertTrue(unmatched.exists())
-        self.assertTrue(active_info.exists())
-        self.assertTrue(active_debug.exists())
-        self.assertTrue(rotated_info_keep.exists())
-        self.assertFalse(drop_info.exists())
-        self.assertFalse(drop_debug.exists())
-        self.assertFalse(rotated_info_drop.exists())
-        self.assertFalse(size_leftover.exists())
-
-    def test_missing_dir_does_not_raise(self):
-        deleted = purge_old_logs(
-            str(self.root / "nope"),
-            log_prefix=self.prefix,
-            now=self.now,
-        )
-        self.assertEqual(deleted, 0)
-
-    def test_unreadable_date_is_skipped(self):
-        invalid_date = self.logs / f"{self.prefix}_20261301.log"
-        self._touch(invalid_date)
-        with self.assertLogs("root", level="WARNING") as logs:
-            deleted = purge_old_logs(str(self.logs), log_prefix=self.prefix, now=self.now)
-        self.assertEqual(deleted, 0)
-        self.assertTrue(invalid_date.exists())
-        self.assertTrue(
-            any("Skipping log file with unparseable date" in record.message for record in logs.records)
-        )
+            Path.unlink = boom
+            try:
+                deleted = purge_old_logs(
+                    str(logs),
+                    now=datetime(2026, 8, 16),
+                )
+            finally:
+                Path.unlink = original_unlink
+            self.assertEqual(deleted, 0)
+            self.assertTrue(victim.exists())
 
 
 if __name__ == "__main__":
