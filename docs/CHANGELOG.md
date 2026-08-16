@@ -7,6 +7,9 @@
 
 ## [3.0.5] - 2026-02-08
 
+### 变更
+- 日志按天滚动并自动清理过期文件；不再将完整 LLM Prompt 写入 debug 日志。可通过 `LOG_RETENTION_DAYS` / `LOG_DEBUG_RETENTION_DAYS` 配置保留期。
+
 ### 修复
 - 🐛 修复信号 emoji 与建议不一致的问题（复合建议如"卖出/观望"未正确映射）
 - 🐛 修复 `*ST` 股票名在微信/Dashboard 中 markdown 转义问题

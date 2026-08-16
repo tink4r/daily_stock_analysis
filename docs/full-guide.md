@@ -214,6 +214,8 @@ daily_stock_analysis/
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
 | `LOG_DIR` | 日志目录 | `./logs` |
+| `LOG_RETENTION_DAYS` | 常规日志保留天数 | `7` |
+| `LOG_DEBUG_RETENTION_DAYS` | 调试日志保留天数 | `3` |
 
 ---
 
