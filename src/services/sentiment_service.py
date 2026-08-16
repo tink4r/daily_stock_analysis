@@ -182,6 +182,98 @@ class XueqiuAdapter:
             return SentimentResult(0, [], [], error=str(e), source="none", reason="network")
 
 
+class EastmoneyAdapter:
+    """Per-stock Eastmoney guba/comments via AkShare. Never raises to caller."""
+
+    TEXT_KEYS = ("标题", "内容", "评论", "帖子内容", "text", "title")
+    CODE_KEYS = ("股票代码", "代码", "symbol")
+
+    def __init__(self):
+        cfg = get_config()
+        self.max_posts: int = max(5, int(getattr(cfg, "xueqiu_sentiment_max_posts", 20)))
+        self.timeout_seconds: float = 10.0
+
+    def fetch(self, stock_code: str, stock_name: str) -> SentimentResult:
+        try:
+            df = self._call_akshare(stock_code)
+            posts = self._rows_to_texts(df, stock_code)[: self.max_posts]
+            if not posts:
+                return SentimentResult(0, [], [], error="东方财富未返回讨论文本", source="none", reason="empty")
+            return SentimentResult(len(posts), posts[:5], [], source="eastmoney")
+        except Exception as e:
+            logger.warning(f"[社区舆情] 东方财富抓取失败: {e}")
+            return SentimentResult(0, [], [], error=str(e), source="none", reason="network")
+
+    def _call_akshare(self, stock_code: str):
+        import akshare as ak
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
+        code = (stock_code or "").strip()
+        func = None
+        for name in ("stock_guba_em", "stock_comment_em"):
+            candidate = getattr(ak, name, None)
+            if callable(candidate):
+                func = candidate
+                break
+        if func is None:
+            raise RuntimeError("akshare 无股吧/评论接口")
+
+        def _invoke():
+            try:
+                return func(symbol=code)
+            except TypeError:
+                return func(code)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_invoke)
+            try:
+                df = future.result(timeout=self.timeout_seconds)
+            except FuturesTimeout as e:
+                raise TimeoutError(f"东方财富请求超时: {e}") from e
+        return df
+
+    @staticmethod
+    def _normalize_code(value: Any) -> str:
+        digits = re.sub(r"\D", "", str(value or ""))
+        return digits[-6:] if len(digits) >= 6 else digits
+
+    def _rows_to_texts(self, df, stock_code: str = "") -> List[str]:
+        if df is None or getattr(df, "empty", False):
+            return []
+        rows = df.to_dict(orient="records") if hasattr(df, "to_dict") else []
+        target = self._normalize_code(stock_code)
+        code_key = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for key in self.CODE_KEYS:
+                if key in row:
+                    code_key = key
+                    break
+            if code_key:
+                break
+        if code_key and target:
+            rows = [
+                row
+                for row in rows
+                if isinstance(row, dict) and self._normalize_code(row.get(code_key)) == target
+            ]
+        texts: List[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for key in self.TEXT_KEYS:
+                val = row.get(key)
+                if val is None:
+                    continue
+                text = re.sub(r"<[^>]+>", "", str(val))
+                text = re.sub(r"\s+", " ", text).strip()
+                if text:
+                    texts.append(text)
+                    break
+        return texts
+
+
 class XueqiuSentimentService:
     """雪球舆情抓取服务（不做前置词典打分）。"""
 

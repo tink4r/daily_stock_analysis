@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.services.sentiment_service import (
+    EastmoneyAdapter,
     XueqiuAdapter,
     SentimentResult,
     cookie_is_configured,
@@ -113,6 +114,34 @@ class TestXueqiuAdapter(unittest.TestCase):
         self.assertEqual(first.source, "none")
         self.assertEqual(second.reason, "blocked")
         self.assertEqual(session.get.call_count, 2)
+
+
+class TestEastmoneyAdapter(unittest.TestCase):
+    def test_extracts_text_from_dataframe_like_rows(self):
+        with patch("src.services.sentiment_service.get_config", return_value=_xq_cfg()):
+            adapter = EastmoneyAdapter()
+
+        class FakeDF:
+            empty = False
+
+            def to_dict(self, orient):
+                return [{"标题": "今天放量", "作者": "a"}, {"标题": "看空", "作者": "b"}]
+
+        with patch.object(adapter, "_call_akshare", return_value=FakeDF()):
+            result = adapter.fetch("000938", "紫光股份")
+        self.assertEqual(result.source, "eastmoney")
+        self.assertEqual(result.sample_count, 2)
+        self.assertEqual(result.highlights[0], "今天放量")
+        self.assertIsNone(result.error)
+
+    def test_exception_becomes_error(self):
+        with patch("src.services.sentiment_service.get_config", return_value=_xq_cfg()):
+            adapter = EastmoneyAdapter()
+        with patch.object(adapter, "_call_akshare", side_effect=RuntimeError("boom")):
+            result = adapter.fetch("000938", "紫光股份")
+        self.assertEqual(result.source, "none")
+        self.assertEqual(result.sample_count, 0)
+        self.assertIn("boom", result.error or "")
 
 
 if __name__ == "__main__":
