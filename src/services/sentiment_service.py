@@ -21,6 +21,23 @@ from src.config import get_config
 
 logger = logging.getLogger(__name__)
 
+WAF_MARKERS = ("aliyun_waf", "_waf_")
+
+
+def cookie_is_configured(cookie: Optional[str]) -> bool:
+    return bool(cookie and str(cookie).strip())
+
+
+def response_is_blocked(status_code: int, content_type: str, body: str) -> bool:
+    if status_code != 200:
+        return False
+    ct = (content_type or "").lower()
+    text = body or ""
+    if "application/json" not in ct:
+        return True
+    lowered = text[:2000].lower()
+    return any(marker in lowered for marker in WAF_MARKERS)
+
 
 @dataclass
 class SentimentResult:
