@@ -45,6 +45,141 @@ class SentimentResult:
     highlights: List[str]
     kol_highlights: List[str]
     error: Optional[str] = None
+    source: str = "none"
+    reason: Optional[str] = None
+
+
+def _extract_text(item: Dict[str, Any]) -> str:
+    text = item.get("text") or item.get("description") or item.get("title") or ""
+    text = re.sub(r"<[^>]+>", "", str(text))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _extract_author(item: Dict[str, Any]) -> str:
+    user = item.get("user") if isinstance(item, dict) else None
+    if isinstance(user, dict):
+        name = user.get("screen_name") or user.get("name") or user.get("nickname") or ""
+        return str(name).strip()
+    for key in ("screen_name", "user_name", "username", "author"):
+        val = item.get(key) if isinstance(item, dict) else None
+        if val:
+            return str(val).strip()
+    return ""
+
+
+class XueqiuAdapter:
+    """Fetch Xueqiu search posts; skip HTTP after WAF or when cookie is missing."""
+
+    _blocked: bool = False
+
+    def __init__(self):
+        cfg = get_config()
+        self.cookie: Optional[str] = getattr(cfg, "xueqiu_cookie", None)
+        self.user_agent: str = getattr(
+            cfg,
+            "xueqiu_user_agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/121.0 Safari/537.36",
+        )
+        self.max_posts: int = max(5, int(getattr(cfg, "xueqiu_sentiment_max_posts", 20)))
+        self.kol_users: List[str] = [
+            str(u).strip().lower() for u in (getattr(cfg, "xueqiu_kol_users", []) or []) if str(u).strip()
+        ]
+
+    @classmethod
+    def reset_block_flag(cls) -> None:
+        cls._blocked = False
+
+    @classmethod
+    def is_blocked(cls) -> bool:
+        return cls._blocked
+
+    def fetch(self, stock_code: str, stock_name: str) -> SentimentResult:
+        if not cookie_is_configured(self.cookie):
+            return SentimentResult(0, [], [], source="none", reason="no_cookie")
+        if self._blocked:
+            return SentimentResult(0, [], [], source="none", reason="blocked")
+
+        try:
+            socket.getaddrinfo("xueqiu.com", 443)
+        except socket.gaierror as e:
+            msg = f"DNS解析失败（xueqiu.com）: {e}，请检查容器 DNS / 代理配置"
+            logger.warning("[雪球舆情] %s", msg)
+            return SentimentResult(0, [], [], error=msg, source="none", reason="network")
+
+        session = requests.Session()
+        headers = {
+            "User-Agent": self.user_agent,
+            "Referer": "https://xueqiu.com/",
+            "Accept": "application/json, text/plain, */*",
+        }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+
+        try:
+            session.get("https://xueqiu.com/", headers=headers, timeout=8)
+        except Exception:
+            pass
+
+        query = f"{stock_name} {stock_code}".strip()
+        url = "https://xueqiu.com/query/v1/search/status.json"
+        params = {
+            "sortId": "1",
+            "q": query,
+            "count": str(self.max_posts),
+            "page": "1",
+        }
+
+        try:
+            resp = session.get(url, headers=headers, params=params, timeout=10)
+            content_type = resp.headers.get("content-type", "")
+            body = resp.text or ""
+            if response_is_blocked(resp.status_code, content_type, body):
+                XueqiuAdapter._blocked = True
+                msg = "雪球被WAF拦截"
+                logger.warning("[雪球舆情] %s", msg)
+                return SentimentResult(0, [], [], error=msg, source="none", reason="blocked")
+
+            if resp.status_code != 200:
+                return SentimentResult(
+                    0, [], [], error=f"HTTP {resp.status_code}", source="none", reason="network"
+                )
+
+            payload = resp.json() if "application/json" in content_type else {}
+            raw_list = payload.get("list") or payload.get("statuses") or []
+
+            posts: List[Dict[str, str]] = []
+            for item in raw_list:
+                text = _extract_text(item)
+                if text:
+                    author = _extract_author(item)
+                    posts.append({"text": text, "author": author})
+
+            if not posts:
+                return SentimentResult(0, [], [], source="none", reason="empty")
+
+            highlights = [p["text"] for p in posts[:5]]
+            kol_set = set(self.kol_users)
+            kol_highlights: List[str] = []
+            if kol_set:
+                for p in posts:
+                    author = p.get("author", "")
+                    if author and author.lower() in kol_set:
+                        kol_highlights.append(f"@{author}: {p['text'][:120]}")
+
+            return SentimentResult(len(posts), highlights, kol_highlights, source="xueqiu")
+
+        except requests.exceptions.Timeout as e:
+            msg = f"请求超时: {e}"
+            logger.warning("[雪球舆情] 抓取失败: %s", msg)
+            return SentimentResult(0, [], [], error=msg, source="none", reason="network")
+        except requests.exceptions.ConnectionError as e:
+            msg = f"网络连接失败（可能为DNS/网络不可达）: {e}"
+            logger.warning("[雪球舆情] 抓取失败: %s", msg)
+            return SentimentResult(0, [], [], error=msg, source="none", reason="network")
+        except Exception as e:
+            logger.warning("[雪球舆情] 抓取失败: %s", e)
+            return SentimentResult(0, [], [], error=str(e), source="none", reason="network")
 
 
 class XueqiuSentimentService:
@@ -140,9 +275,9 @@ class XueqiuSentimentService:
 
             posts: List[Dict[str, str]] = []
             for item in raw_list:
-                text = self._extract_text(item)
+                text = _extract_text(item)
                 if text:
-                    author = self._extract_author(item)
+                    author = _extract_author(item)
                     posts.append({"text": text, "author": author})
 
             if not posts:
@@ -173,19 +308,8 @@ class XueqiuSentimentService:
 
     @staticmethod
     def _extract_text(item: Dict[str, Any]) -> str:
-        text = item.get("text") or item.get("description") or item.get("title") or ""
-        text = re.sub(r"<[^>]+>", "", str(text))
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
+        return _extract_text(item)
 
     @staticmethod
     def _extract_author(item: Dict[str, Any]) -> str:
-        user = item.get("user") if isinstance(item, dict) else None
-        if isinstance(user, dict):
-            name = user.get("screen_name") or user.get("name") or user.get("nickname") or ""
-            return str(name).strip()
-        for key in ("screen_name", "user_name", "username", "author"):
-            val = item.get(key) if isinstance(item, dict) else None
-            if val:
-                return str(val).strip()
-        return ""
+        return _extract_author(item)
