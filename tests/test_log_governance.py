@@ -198,5 +198,14 @@ class TestSetupLogging(unittest.TestCase):
             self._close_handlers()
 
 
+class TestAnalyzerLogNoise(unittest.TestCase):
+    def test_no_full_prompt_debug(self):
+        text = Path("src/analyzer.py").read_text(encoding="utf-8")
+        self.assertNotIn("完整 Prompt", text)
+        self.assertNotIn("完整响应", text)
+        self.assertIn("[LLM Prompt 预览]", text)
+        self.assertIn("[LLM返回 预览]", text)
+
+
 if __name__ == "__main__":
     unittest.main()
