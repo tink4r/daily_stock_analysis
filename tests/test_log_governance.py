@@ -5,9 +5,11 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.config import Config, get_config
 from src.logging_config import _should_delete_log_file, purge_old_logs
 
 
@@ -118,6 +120,22 @@ class TestPurgeOldLogs(unittest.TestCase):
                 Path.unlink = original_unlink
             self.assertEqual(deleted, 0)
             self.assertTrue(victim.exists())
+
+
+class TestLogRetentionConfig(unittest.TestCase):
+    def tearDown(self):
+        Config.reset_instance()
+
+    def test_env_override(self):
+        Config.reset_instance()
+        with patch.dict(
+            os.environ,
+            {"LOG_RETENTION_DAYS": "10", "LOG_DEBUG_RETENTION_DAYS": "2"},
+            clear=False,
+        ):
+            cfg = get_config()
+            self.assertEqual(cfg.log_retention_days, 10)
+            self.assertEqual(cfg.log_debug_retention_days, 2)
 
 
 if __name__ == "__main__":

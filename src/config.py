@@ -181,6 +181,8 @@ class Config:
     # === 日志配置 ===
     log_dir: str = "./logs"  # 日志文件目录
     log_level: str = "INFO"  # 日志级别
+    log_retention_days: int = 7
+    log_debug_retention_days: int = 3
     
     # === 系统配置 ===
     max_workers: int = 3  # 低并发防封禁
@@ -488,6 +490,8 @@ class Config:
             backtest_neutral_band_pct=float(os.getenv('BACKTEST_NEUTRAL_BAND_PCT', '2.0')),
             log_dir=os.getenv('LOG_DIR', './logs'),
             log_level=os.getenv('LOG_LEVEL', 'INFO'),
+            log_retention_days=int(os.getenv('LOG_RETENTION_DAYS', '7')),
+            log_debug_retention_days=int(os.getenv('LOG_DEBUG_RETENTION_DAYS', '3')),
             max_workers=int(os.getenv('MAX_WORKERS', '3')),
             debug=os.getenv('DEBUG', 'false').lower() == 'true',
             http_proxy=os.getenv('HTTP_PROXY'),
