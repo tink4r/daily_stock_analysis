@@ -402,7 +402,13 @@ def main() -> int:
     config = get_config()
 
     # 配置日志（输出到控制台和文件）
-    setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)
+    setup_logging(
+        log_prefix="stock_analysis",
+        debug=args.debug,
+        log_dir=config.log_dir,
+        retention_days=config.log_retention_days,
+        debug_retention_days=config.log_debug_retention_days,
+    )
     
     logger.info("=" * 60)
     logger.info("A股自选股智能分析系统 启动")

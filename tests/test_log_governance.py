@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
+import logging
 import os
 import sys
 import tempfile
 import unittest
 from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.config import Config, get_config
-from src.logging_config import _should_delete_log_file, purge_old_logs
+from src.logging_config import DEFAULT_QUIET_LOGGERS, _should_delete_log_file, purge_old_logs, setup_logging
 
 
 class TestShouldDeleteLogFile(unittest.TestCase):
@@ -136,6 +138,64 @@ class TestLogRetentionConfig(unittest.TestCase):
             cfg = get_config()
             self.assertEqual(cfg.log_retention_days, 10)
             self.assertEqual(cfg.log_debug_retention_days, 2)
+
+
+class TestSetupLogging(unittest.TestCase):
+    def _close_handlers(self):
+        root = logging.getLogger()
+        for handler in root.handlers[:]:
+            handler.close()
+            root.removeHandler(handler)
+
+    def tearDown(self):
+        self._close_handlers()
+
+    def test_uses_timed_rotating_undated_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            setup_logging(
+                log_prefix="stock_analysis",
+                log_dir=tmp,
+                retention_days=7,
+                debug_retention_days=3,
+            )
+            root = logging.getLogger()
+            timed = [h for h in root.handlers if isinstance(h, TimedRotatingFileHandler)]
+            self.assertEqual(len(timed), 2)
+            names = {Path(h.baseFilename).name for h in timed}
+            self.assertEqual(names, {"stock_analysis.log", "stock_analysis_debug.log"})
+            for handler in timed:
+                self.assertEqual(handler.when, "MIDNIGHT")
+                self.assertFalse(handler.utc)
+            info_handler = next(h for h in timed if Path(h.baseFilename).name == "stock_analysis.log")
+            debug_handler = next(
+                h for h in timed if Path(h.baseFilename).name == "stock_analysis_debug.log"
+            )
+            self.assertEqual(info_handler.backupCount, 7)
+            self.assertEqual(debug_handler.backupCount, 3)
+            self._close_handlers()
+
+    def test_quiet_loggers_include_openai(self):
+        self.assertIn("openai", DEFAULT_QUIET_LOGGERS)
+        self.assertIn("httpcore", DEFAULT_QUIET_LOGGERS)
+        self.assertIn("httpx", DEFAULT_QUIET_LOGGERS)
+        with tempfile.TemporaryDirectory() as tmp:
+            setup_logging(log_prefix="stock_analysis", log_dir=tmp)
+            self.assertEqual(logging.getLogger("openai").level, logging.WARNING)
+            self.assertEqual(logging.getLogger("httpcore").level, logging.WARNING)
+            self._close_handlers()
+
+    def test_setup_purges_old_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / "stock_analysis_20260101.log"
+            old.write_text("gone", encoding="utf-8")
+            setup_logging(
+                log_prefix="stock_analysis",
+                log_dir=tmp,
+                retention_days=7,
+                debug_retention_days=3,
+            )
+            self.assertFalse(old.exists())
+            self._close_handlers()
 
 
 if __name__ == "__main__":
