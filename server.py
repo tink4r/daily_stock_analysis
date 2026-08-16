@@ -34,6 +34,8 @@ setup_logging(
     log_prefix="api_server",
     console_level=level,
     extra_quiet_loggers=['uvicorn', 'fastapi'],
+    retention_days=config.log_retention_days,
+    debug_retention_days=config.log_debug_retention_days,
 )
 
 # 从 api.app 导入应用实例
