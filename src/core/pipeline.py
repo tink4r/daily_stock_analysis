@@ -26,7 +26,7 @@ from src.analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
 from src.services.finance_service import FinanceIntelService
-from src.services.sentiment_service import XueqiuSentimentService
+from src.services.sentiment_service import CommunitySentimentService
 from src.services.news_service import RssNewsService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
@@ -89,7 +89,7 @@ class StockAnalysisPipeline:
 
         # 方案A：结构化情报服务
         self.finance_intel_service = FinanceIntelService()
-        self.sentiment_service = XueqiuSentimentService()
+        self.sentiment_service = CommunitySentimentService()
         self.rss_news_service = RssNewsService()
         
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")

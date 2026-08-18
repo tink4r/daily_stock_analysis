@@ -8,9 +8,11 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.services.sentiment_service import (
+    CommunitySentimentService,
     EastmoneyAdapter,
     XueqiuAdapter,
     SentimentResult,
+    XueqiuSentimentService,
     cookie_is_configured,
     response_is_blocked,
 )
@@ -142,6 +144,79 @@ class TestEastmoneyAdapter(unittest.TestCase):
         self.assertEqual(result.source, "none")
         self.assertEqual(result.sample_count, 0)
         self.assertIn("boom", result.error or "")
+
+
+class TestCommunityOrchestrator(unittest.TestCase):
+    def setUp(self):
+        XueqiuAdapter.reset_block_flag()
+
+    def tearDown(self):
+        XueqiuAdapter.reset_block_flag()
+
+    def _service(self, **cfg):
+        with patch("src.services.sentiment_service.get_config", return_value=_xq_cfg(**cfg)):
+            return CommunitySentimentService()
+
+    def test_no_cookie_uses_eastmoney_and_skips_xueqiu_http(self):
+        svc = self._service(xueqiu_cookie=None)
+        xq = SentimentResult(0, [], [], source="none", reason="no_cookie")
+        em = SentimentResult(1, ["股吧观点"], [], source="eastmoney")
+        with patch.object(svc._xueqiu, "fetch", return_value=xq) as xq_fetch:
+            with patch.object(svc._eastmoney, "fetch", return_value=em) as em_fetch:
+                text = svc.build_sentiment_context("000938", "紫光股份")
+        xq_fetch.assert_called_once()
+        em_fetch.assert_called_once()
+        self.assertIn("东方财富", text)
+        self.assertIn("股吧观点", text)
+        self.assertIn("雪球不可用", text)
+        self.assertNotIn("未抓取到有效讨论文本", text)
+
+    def test_xueqiu_posts_skip_eastmoney(self):
+        svc = self._service()
+        xq = SentimentResult(1, ["雪球观点"], [], source="xueqiu")
+        with patch.object(svc._xueqiu, "fetch", return_value=xq):
+            with patch.object(svc._eastmoney, "fetch") as em_fetch:
+                text = svc.build_sentiment_context("000938", "紫光股份")
+        em_fetch.assert_not_called()
+        self.assertIn("雪球", text)
+        self.assertIn("雪球观点", text)
+
+    def test_both_empty_lists_reasons(self):
+        svc = self._service()
+        xq = SentimentResult(0, [], [], source="none", reason="empty", error="雪球空列表")
+        em = SentimentResult(0, [], [], source="none", reason="empty", error="东方财富未返回讨论文本")
+        with patch.object(svc._xueqiu, "fetch", return_value=xq):
+            with patch.object(svc._eastmoney, "fetch", return_value=em):
+                text = svc.build_sentiment_context("000938", "紫光股份")
+        self.assertIn("样本量: 0", text)
+        self.assertIn("雪球", text)
+        self.assertIn("东方财富", text)
+
+    def test_blocked_xueqiu_uses_eastmoney(self):
+        svc = self._service()
+        xq = SentimentResult(0, [], [], source="none", reason="blocked", error="雪球被WAF拦截")
+        em = SentimentResult(1, ["股吧观点"], [], source="eastmoney")
+        with patch.object(svc._xueqiu, "fetch", return_value=xq):
+            with patch.object(svc._eastmoney, "fetch", return_value=em):
+                text = svc.build_sentiment_context("000938", "紫光股份")
+        self.assertIn("东方财富", text)
+        self.assertIn("雪球不可用", text)
+
+    def test_eastmoney_error_does_not_raise(self):
+        svc = self._service(xueqiu_cookie=None)
+        xq = SentimentResult(0, [], [], source="none", reason="no_cookie")
+        em = SentimentResult(0, [], [], error="boom", source="none", reason="network")
+        with patch.object(svc._xueqiu, "fetch", return_value=xq):
+            with patch.object(svc._eastmoney, "fetch", return_value=em):
+                text = svc.build_sentiment_context("000938", "紫光股份")
+        self.assertIn("boom", text)
+
+    def test_both_disabled_returns_empty(self):
+        svc = self._service(xueqiu_sentiment_enabled=False, community_sentiment_fallback_enabled=False)
+        self.assertEqual(svc.build_sentiment_context("000938", "紫光股份"), "")
+
+    def test_alias_exists(self):
+        self.assertIs(XueqiuSentimentService, CommunitySentimentService)
 
 
 if __name__ == "__main__":
