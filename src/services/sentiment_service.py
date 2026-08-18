@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import socket
@@ -183,10 +184,7 @@ class XueqiuAdapter:
 
 
 class EastmoneyAdapter:
-    """Per-stock Eastmoney guba/comments via AkShare. Never raises to caller."""
-
-    TEXT_KEYS = ("标题", "内容", "评论", "帖子内容", "text", "title")
-    CODE_KEYS = ("股票代码", "代码", "symbol")
+    """Fetch per-stock Eastmoney Guba posts. Never raises to caller."""
 
     def __init__(self):
         cfg = get_config()
@@ -195,8 +193,7 @@ class EastmoneyAdapter:
 
     def fetch(self, stock_code: str, stock_name: str) -> SentimentResult:
         try:
-            df = self._call_akshare(stock_code)
-            posts = self._rows_to_texts(df, stock_code)[: self.max_posts]
+            posts = self._fetch_guba_posts(stock_code)[: self.max_posts]
             if not posts:
                 return SentimentResult(0, [], [], error="东方财富未返回讨论文本", source="none", reason="empty")
             return SentimentResult(len(posts), posts[:5], [], source="eastmoney")
@@ -204,73 +201,37 @@ class EastmoneyAdapter:
             logger.warning(f"[社区舆情] 东方财富抓取失败: {e}")
             return SentimentResult(0, [], [], error=str(e), source="none", reason="network")
 
-    def _call_akshare(self, stock_code: str):
-        import akshare as ak
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-
+    def _fetch_guba_posts(self, stock_code: str) -> List[str]:
         code = (stock_code or "").strip()
-        func = None
-        for name in ("stock_guba_em", "stock_comment_em"):
-            candidate = getattr(ak, name, None)
-            if callable(candidate):
-                func = candidate
-                break
-        if func is None:
-            raise RuntimeError("akshare 无股吧/评论接口")
+        url = f"https://guba.eastmoney.com/list,{code},f_1.html"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 Chrome/121.0 Safari/537.36"
+            ),
+            "Referer": f"https://guba.eastmoney.com/list,{code}.html",
+        }
+        response = requests.get(url, headers=headers, timeout=self.timeout_seconds)
+        response.raise_for_status()
 
-        def _invoke():
-            try:
-                return func(symbol=code)
-            except TypeError:
-                return func(code)
+        marker = "var article_list="
+        marker_index = response.text.find(marker)
+        if marker_index < 0:
+            raise ValueError("东方财富股吧页面未包含帖子数据")
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_invoke)
-            try:
-                df = future.result(timeout=self.timeout_seconds)
-            except FuturesTimeout as e:
-                raise TimeoutError(f"东方财富请求超时: {e}") from e
-        return df
+        payload_text = response.text[marker_index + len(marker):].lstrip()
+        payload, _ = json.JSONDecoder().raw_decode(payload_text)
+        rows = payload.get("re") or []
 
-    @staticmethod
-    def _normalize_code(value: Any) -> str:
-        digits = re.sub(r"\D", "", str(value or ""))
-        return digits[-6:] if len(digits) >= 6 else digits
-
-    def _rows_to_texts(self, df, stock_code: str = "") -> List[str]:
-        if df is None or getattr(df, "empty", False):
-            return []
-        rows = df.to_dict(orient="records") if hasattr(df, "to_dict") else []
-        target = self._normalize_code(stock_code)
-        code_key = None
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            for key in self.CODE_KEYS:
-                if key in row:
-                    code_key = key
-                    break
-            if code_key:
-                break
-        if code_key and target:
-            rows = [
-                row
-                for row in rows
-                if isinstance(row, dict) and self._normalize_code(row.get(code_key)) == target
-            ]
         texts: List[str] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            for key in self.TEXT_KEYS:
-                val = row.get(key)
-                if val is None:
-                    continue
-                text = re.sub(r"<[^>]+>", "", str(val))
-                text = re.sub(r"\s+", " ", text).strip()
-                if text:
-                    texts.append(text)
-                    break
+            value = row.get("post_title") or row.get("post_content") or ""
+            text = re.sub(r"<[^>]+>", "", str(value))
+            text = re.sub(r"\s+", " ", text).strip()
+            if text:
+                texts.append(text)
         return texts
 
 

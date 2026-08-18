@@ -45,6 +45,7 @@
 | AI 模型 | Gemini（免费）、OpenAI 兼容、DeepSeek、通义千问、Claude、Ollama |
 | 行情数据 | AkShare、Tushare、Pytdx、Baostock、YFinance |
 | 新闻搜索 | Tavily、SerpAPI、Bocha、Brave |
+| 社区舆情 | 雪球（需 Cookie）；不可用时自动读取东方财富个股股吧帖子 |
 
 ### 内置交易纪律
 
@@ -78,6 +79,8 @@
 | `OPENAI_API_KEY` | OpenAI 兼容 API Key（支持 DeepSeek、通义千问等） | 可选 |
 | `OPENAI_BASE_URL` | OpenAI 兼容 API 地址（如 `https://api.deepseek.com/v1`） | 可选 |
 | `OPENAI_MODEL` | 模型名称（如 `deepseek-chat`） | 可选 |
+| `GEMINI_TEMPERATURE` | Gemini 生成温度，默认 `0.7` | 可选 |
+| `OPENAI_TEMPERATURE` | OpenAI 兼容模型生成温度，默认 `0.7` | 可选 |
 
 > 注：`GEMINI_API_KEY` 和 `OPENAI_API_KEY` 至少配置一个
 

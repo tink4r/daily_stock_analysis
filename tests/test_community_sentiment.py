@@ -120,27 +120,35 @@ class TestXueqiuAdapter(unittest.TestCase):
 
 
 class TestEastmoneyAdapter(unittest.TestCase):
-    def test_extracts_text_from_dataframe_like_rows(self):
+    def test_fetches_posts_from_embedded_article_list(self):
         with patch("src.services.sentiment_service.get_config", return_value=_xq_cfg()):
             adapter = EastmoneyAdapter()
 
-        class FakeDF:
-            empty = False
-
-            def to_dict(self, orient):
-                return [{"标题": "今天放量", "作者": "a"}, {"标题": "看空", "作者": "b"}]
-
-        with patch.object(adapter, "_call_akshare", return_value=FakeDF()):
+        response = MagicMock(
+            status_code=200,
+            text=(
+                '<script>var article_list={"re":['
+                '{"post_title":"今天放量","post_content":"","user_nickname":"a"},'
+                '{"post_title":"","post_content":"看空","user_nickname":"b"}'
+                "]};</script>"
+            ),
+        )
+        response.raise_for_status.return_value = None
+        with patch("src.services.sentiment_service.requests.get", return_value=response) as request_get:
             result = adapter.fetch("000938", "紫光股份")
+
+        request_get.assert_called_once()
+        self.assertIn("list,000938", request_get.call_args.args[0])
         self.assertEqual(result.source, "eastmoney")
         self.assertEqual(result.sample_count, 2)
         self.assertEqual(result.highlights[0], "今天放量")
+        self.assertEqual(result.highlights[1], "看空")
         self.assertIsNone(result.error)
 
     def test_exception_becomes_error(self):
         with patch("src.services.sentiment_service.get_config", return_value=_xq_cfg()):
             adapter = EastmoneyAdapter()
-        with patch.object(adapter, "_call_akshare", side_effect=RuntimeError("boom")):
+        with patch("src.services.sentiment_service.requests.get", side_effect=RuntimeError("boom")):
             result = adapter.fetch("000938", "紫光股份")
         self.assertEqual(result.source, "none")
         self.assertEqual(result.sample_count, 0)

@@ -24,6 +24,11 @@ from src.config import get_config
 logger = logging.getLogger(__name__)
 
 
+def resolve_generation_temperature(config: Any, use_openai: bool) -> float:
+    """Select the temperature for the active LLM provider."""
+    return config.openai_temperature if use_openai else config.gemini_temperature
+
+
 # 股票名称映射（常见股票）
 STOCK_NAME_MAP = {
     # === A股 ===
@@ -949,9 +954,10 @@ class GeminiAnalyzer:
             # 设置生成配置（从配置文件读取温度参数）
             config = get_config()
             generation_config = {
-                "temperature": config.gemini_temperature,
+                "temperature": resolve_generation_temperature(config, self._use_openai),
                 "max_output_tokens": 8192,
             }
+            logger.info(f"[LLM配置] 温度: {generation_config['temperature']}")
 
             # 根据实际使用的 API 显示日志
             api_provider = "OpenAI" if self._use_openai else "Gemini"

@@ -12,6 +12,8 @@
 - 社区舆情：无雪球 Cookie 或被 WAF 拦截时改用东方财富股吧/评论；提示来源，避免误判为无人讨论。可通过 `COMMUNITY_SENTIMENT_FALLBACK_ENABLED` 关闭兜底。
 
 ### 修复
+- 🐛 修复 OpenAI 兼容模型错误使用 `GEMINI_TEMPERATURE`、忽略 `OPENAI_TEMPERATURE` 的问题。
+- 🐛 修复东方财富舆情兜底误调用 AkShare 千股千评接口的问题，改为读取个股股吧帖子。
 - 🐛 修复信号 emoji 与建议不一致的问题（复合建议如"卖出/观望"未正确映射）
 - 🐛 修复 `*ST` 股票名在微信/Dashboard 中 markdown 转义问题
 - 🐛 修复 `idx.amount` 为 None 时大盘复盘 TypeError
