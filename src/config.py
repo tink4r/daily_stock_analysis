@@ -90,6 +90,7 @@ class Config:
     xueqiu_user_agent: Optional[str] = None
     xueqiu_sentiment_max_posts: int = 50
     xueqiu_kol_users: List[str] = field(default_factory=list)
+    community_sentiment_fallback_enabled: bool = True
 
     rsshub_enabled: bool = True
     rsshub_base_url: str = "http://rsshub:1200"
@@ -443,6 +444,9 @@ class Config:
             xueqiu_user_agent=os.getenv('XUEQIU_USER_AGENT'),
             xueqiu_sentiment_max_posts=int(os.getenv('XUEQIU_SENTIMENT_MAX_POSTS', '50')),
             xueqiu_kol_users=xueqiu_kol_users,
+            community_sentiment_fallback_enabled=os.getenv(
+                "COMMUNITY_SENTIMENT_FALLBACK_ENABLED", "true"
+            ).lower() == "true",
             rsshub_enabled=os.getenv('RSSHUB_ENABLED', 'true').lower() == 'true',
             rsshub_base_url=os.getenv('RSSHUB_BASE_URL', 'http://rsshub:1200'),
             rsshub_route_templates=rsshub_route_templates,

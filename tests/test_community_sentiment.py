@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src.config import Config, get_config
 from src.services.sentiment_service import (
     CommunitySentimentService,
     EastmoneyAdapter,
@@ -144,6 +145,17 @@ class TestEastmoneyAdapter(unittest.TestCase):
         self.assertEqual(result.source, "none")
         self.assertEqual(result.sample_count, 0)
         self.assertIn("boom", result.error or "")
+
+
+class TestFallbackConfig(unittest.TestCase):
+    def tearDown(self):
+        Config.reset_instance()
+
+    def test_env_false(self):
+        Config.reset_instance()
+        with patch.dict(os.environ, {"COMMUNITY_SENTIMENT_FALLBACK_ENABLED": "false"}, clear=False):
+            cfg = get_config()
+            self.assertFalse(cfg.community_sentiment_fallback_enabled)
 
 
 class TestCommunityOrchestrator(unittest.TestCase):
