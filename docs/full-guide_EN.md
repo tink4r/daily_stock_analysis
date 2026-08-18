@@ -212,6 +212,8 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `LOG_DIR` | Log directory | `./logs` |
 | `LOG_RETENTION_DAYS` | Days to keep regular log files | `7` |
 | `LOG_DEBUG_RETENTION_DAYS` | Days to keep debug log files | `3` |
+| `XUEQIU_COOKIE` | Xueqiu cookie; skip Xueqiu HTTP when empty | - |
+| `COMMUNITY_SENTIMENT_FALLBACK_ENABLED` | Fill community block from Eastmoney when Xueqiu is unavailable | `true` |
 
 ---
 

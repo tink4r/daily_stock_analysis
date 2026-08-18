@@ -216,6 +216,8 @@ daily_stock_analysis/
 | `LOG_DIR` | 日志目录 | `./logs` |
 | `LOG_RETENTION_DAYS` | 常规日志保留天数 | `7` |
 | `LOG_DEBUG_RETENTION_DAYS` | 调试日志保留天数 | `3` |
+| `XUEQIU_COOKIE` | 雪球 Cookie；未配置则不请求雪球 | - |
+| `COMMUNITY_SENTIMENT_FALLBACK_ENABLED` | 雪球不可用时用东方财富股吧/评论填社区舆情 | `true` |
 
 ---
 

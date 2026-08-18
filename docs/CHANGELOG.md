@@ -9,6 +9,7 @@
 
 ### 变更
 - 日志按天滚动并自动清理过期文件；不再将完整 LLM Prompt 写入 debug 日志。可通过 `LOG_RETENTION_DAYS` / `LOG_DEBUG_RETENTION_DAYS` 配置保留期。
+- 社区舆情：无雪球 Cookie 或被 WAF 拦截时改用东方财富股吧/评论；提示来源，避免误判为无人讨论。可通过 `COMMUNITY_SENTIMENT_FALLBACK_ENABLED` 关闭兜底。
 
 ### 修复
 - 🐛 修复信号 emoji 与建议不一致的问题（复合建议如"卖出/观望"未正确映射）
